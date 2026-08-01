@@ -32,6 +32,12 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+st.title("Welcome to EcoBuddy AI API")
+
+st.json({
+    "message": "Welcome to EcoBuddy AI API",
+    "version": "1.0.0"
+})
 # Added for Route Planning & Offsets
 from database import (
     init_marketplace_db, save_journey_profile, get_journey_profiles, delete_journey_profile,
