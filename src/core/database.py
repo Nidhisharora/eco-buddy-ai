@@ -146,6 +146,16 @@ def init_db() -> bool:
                 """)
 
                 cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS portfolio_analyses (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        total_invested REAL,
+                        total_emissions REAL,
+                        alignment_score REAL,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+
+                cursor.execute("""
                     CREATE TABLE IF NOT EXISTS aviation_plans (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         distance_km REAL,
@@ -8844,6 +8854,26 @@ def save_p2p_simulation(grid_price: float, p2p_price: float, total_volume_kwh: f
     """, (grid_price, p2p_price, total_volume_kwh, carbon_avoided_kg))
     conn.commit()
     conn.close()
+
+def save_portfolio_analysis(total_invested: float, total_emissions: float, alignment_score: float) -> None:
+    """Saves a sustainable portfolio analysis to the database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO portfolio_analyses (total_invested, total_emissions, alignment_score)
+        VALUES (?, ?, ?)
+    """, (total_invested, total_emissions, alignment_score))
+    conn.commit()
+    conn.close()
+
+def get_portfolio_history() -> list:
+    """Retrieves historical portfolio analyses."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT total_invested, total_emissions, alignment_score, timestamp FROM portfolio_analyses ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
 
 def get_p2p_history() -> list:
     """Retrieves historical P2P energy simulations."""
