@@ -243,6 +243,16 @@ def init_db() -> bool:
                 """)
 
                 cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS civic_actions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        campaign_name TEXT,
+                        action_type TEXT,
+                        points_awarded REAL,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+
+                cursor.execute("""
                     CREATE TABLE IF NOT EXISTS skill_swaps (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         learner_id TEXT,
@@ -5790,6 +5800,25 @@ def add_appliance(user_id: int, name: str, category: str, quantity: int, power_r
         print(f"Appliance save error: {e}")
         return False
 
+def save_civic_action(campaign_name: str, action_type: str, points_awarded: float) -> None:
+    """Saves a completed civic action to the database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO civic_actions (campaign_name, action_type, points_awarded)
+        VALUES (?, ?, ?)
+    """, (campaign_name, action_type, points_awarded))
+    conn.commit()
+    conn.close()
+
+def get_civic_history() -> list:
+    """Retrieves historical civic action logs."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT campaign_name, action_type, points_awarded, timestamp FROM civic_actions ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
 
 def delete_appliance(app_id: int) -> bool:
     try:
