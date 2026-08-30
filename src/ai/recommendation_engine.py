@@ -11,8 +11,13 @@ from functools import lru_cache
 import hashlib
 import json
 
-logger = logging.getLogger(__name__)
+from src.ai.recommendation_decision_engine import (
+    generate_recommendation_decisions,
+    personalize_wording,
+    LATEST_RULE_VERSION,
+)
 
+logger = logging.getLogger(__name__)
 
 class Priority(Enum):
     LOW = 1
@@ -555,9 +560,34 @@ class RecommendationEngine:
             logger.info(f"Generated {len(recommendations)} recommendations in {elapsed:.2f}ms")
             
             return recommendations[:limit]
-    
-    def get_recommendation_by_id(self, rec_id: str) -> Optional[Dict[str, Any]]:
-        """Get a specific recommendation by ID."""
+
+    def generate_versioned_decisions(
+        self,
+        decision_inputs: Dict[str, Any],
+        rule_version: str = LATEST_RULE_VERSION,
+        personalized_wording: Optional[Dict[str, Dict[str, str]]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Generate recommendations via the deterministic, versioned decision layer.
+
+        `decision_inputs` uses the decision engine's own schema (see
+        src/ai/recommendation_decision_engine.py), not the legacy
+        `footprint_data` shape used by `generate_recommendations`.
+        `personalized_wording`, if given, maps rule_id -> {"title": ..,
+        "description": ..} and only ever changes wording; it cannot
+        change which recommendations were selected or why.
+        """
+        decisions = generate_recommendation_decisions(decision_inputs, rule_version=rule_version)
+
+        if personalized_wording:
+            decisions = [
+                personalize_wording(d, **personalized_wording[d.rule_id])
+                if d.rule_id in personalized_wording else d
+                for d in decisions
+            ]
+
+        return [d.to_dict() for d in decisions]
+
+    def get_recommendation_by_id(self, rec_id: str) -> Optional[Dict[str, Any]]:        """Get a specific recommendation by ID."""
         rec = self._recommendation_db.get(rec_id)
         return rec.to_dict() if rec else None
     
