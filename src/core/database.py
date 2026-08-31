@@ -5200,8 +5200,200 @@ def save_assessment(
         return False
 
 
-def get_assessment_snapshot(assessment_id: int) -> dict[str, Any] | None:
+def get_assessment_by_id(assessment_id: int, user_id: int = 1) -> dict[str, Any] | None:
     """
+    Fetch a single assessment together with its concurrency metadata (#1467).
+
+    Used by update_assessment()/finalize_assessment() to build the
+    "current" payload returned on a conflict, and by the frontend to
+    reload the latest row after a stale-edit conflict.
+    """
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, user_id, transport, distance, electricity, diet,
+                   flights, footprint, eco_score, revision, is_finalized,
+                   updated_at
+            FROM assessments
+            WHERE id = ? AND user_id = ?
+            """,
+            (assessment_id, user_id),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if row is None:
+            return None
+        keys = [
+            "id", "user_id", "transport", "distance", "electricity", "diet",
+            "flights", "footprint", "eco_score", "revision", "is_finalized",
+            "updated_at",
+        ]
+        return dict(zip(keys, row))
+    except sqlite3.Error as e:
+        print(f"Database get_assessment_by_id error: {e}")
+        return None
+
+
+_ASSESSMENT_EDITABLE_COLUMNS = {
+    "transport", "distance", "electricity", "diet", "flights",
+    "footprint", "eco_score",
+}
+
+
+def update_assessment(
+    assessment_id: int,
+    user_id: int,
+    expected_revision: int,
+    updates: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Apply a partial update to an assessment using optimistic concurrency
+    control (#1467).
+
+    The caller passes `expected_revision`, the revision it last read. The
+    UPDATE's WHERE clause checks and applies the change in a single atomic
+    statement (`revision = expected_revision`), so two requests racing on
+    stale data can never both succeed - the second one simply matches zero
+    rows. A finalized assessment (`is_finalized = 1`) is likewise excluded,
+    so it can't be edited by accident.
+
+    `updates` may contain any of: transport, distance, electricity, diet,
+    flights, footprint, eco_score. Unknown keys are ignored.
+
+    Returns one of:
+        {"status": "ok", "revision": <new revision>}
+        {"status": "conflict", "current": {...latest row...}}
+        {"status": "finalized", "current": {...latest row...}}
+        {"status": "not_found"}
+        {"status": "error", "error": "..."}
+    """
+    set_columns = [c for c in updates if c in _ASSESSMENT_EDITABLE_COLUMNS]
+    if not set_columns:
+        return {"status": "error", "error": "No valid columns supplied"}
+
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+
+        assignments = ", ".join(f"{c} = ?" for c in set_columns)
+        values = [updates[c] for c in set_columns]
+
+        cursor.execute(
+            f"""
+            UPDATE assessments
+            SET {assignments}, revision = revision + 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND user_id = ? AND revision = ? AND is_finalized = 0
+            """,
+            (*values, assessment_id, user_id, expected_revision),
+        )
+
+        if cursor.rowcount == 1:
+            conn.commit()
+            conn.close()
+            invalidate_on_assessment_save()
+            return {"status": "ok", "revision": expected_revision + 1}
+
+        # Nothing matched: work out why, so the caller/UI gets a precise
+        # reason instead of a generic failure.
+        conn.close()
+        current = get_assessment_by_id(assessment_id, user_id)
+        if current is None:
+            return {"status": "not_found"}
+        if current["is_finalized"]:
+            return {"status": "finalized", "current": current}
+        return {"status": "conflict", "current": current}
+    except sqlite3.Error as e:
+        print(f"Database update_assessment error: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+def finalize_assessment(
+    assessment_id: int, user_id: int, expected_revision: int
+) -> dict[str, Any]:
+    """
+    Mark an assessment finalized (#1467). Uses the same revision check as
+    update_assessment(), so finalizing stale data is rejected the same way
+    an edit would be. Once finalized, update_assessment() refuses further
+    changes until reopen_finalized_assessment() is called explicitly.
+    """
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE assessments
+            SET is_finalized = 1, revision = revision + 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND user_id = ? AND revision = ? AND is_finalized = 0
+            """,
+            (assessment_id, user_id, expected_revision),
+        )
+
+        if cursor.rowcount == 1:
+            conn.commit()
+            conn.close()
+            invalidate_on_assessment_save()
+            return {"status": "ok", "revision": expected_revision + 1}
+
+        conn.close()
+        current = get_assessment_by_id(assessment_id, user_id)
+        if current is None:
+            return {"status": "not_found"}
+        if current["is_finalized"]:
+            return {"status": "finalized", "current": current}
+        return {"status": "conflict", "current": current}
+    except sqlite3.Error as e:
+        print(f"Database finalize_assessment error: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+def reopen_finalized_assessment(
+    assessment_id: int, user_id: int, expected_revision: int
+) -> dict[str, Any]:
+    """
+    Explicit revision workflow (#1467) for editing a finalized assessment.
+
+    This is the only way to make a finalized row editable again - it is a
+    separate, deliberate call rather than something update_assessment()
+    does implicitly, so a finalized assessment can never be modified by
+    accident. Still revision-checked, so reopening itself can't silently
+    clobber a finalize that happened after the caller last read the row.
+    """
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE assessments
+            SET is_finalized = 0, revision = revision + 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND user_id = ? AND revision = ? AND is_finalized = 1
+            """,
+            (assessment_id, user_id, expected_revision),
+        )
+
+        if cursor.rowcount == 1:
+            conn.commit()
+            conn.close()
+            invalidate_on_assessment_save()
+            return {"status": "ok", "revision": expected_revision + 1}
+
+        conn.close()
+        current = get_assessment_by_id(assessment_id, user_id)
+        if current is None:
+            return {"status": "not_found"}
+        if not current["is_finalized"]:
+            return {"status": "not_finalized", "current": current}
+        return {"status": "conflict", "current": current}
+    except sqlite3.Error as e:
+        print(f"Database reopen_finalized_assessment error: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+def get_assessment_snapshot(assessment_id: int) -> dict[str, Any] | None:    """
     Read back the immutable calculation snapshot for one assessment.
 
     Returns None when no snapshot was stored for this assessment (e.g. rows
