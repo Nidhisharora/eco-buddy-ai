@@ -114,6 +114,16 @@ def init_db() -> bool:
                 """)
 
                 cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS resilience_plans (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        region TEXT,
+                        housing_type TEXT,
+                        base_resilience_score REAL,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+
+                cursor.execute("""
                     CREATE TABLE IF NOT EXISTS event_plans (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         guest_count INTEGER,
@@ -9067,6 +9077,26 @@ def save_virtual_water_log(product: str, quantity: float, region: str, scarcity_
     """, (product, quantity, region, scarcity_weighted_l))
     conn.commit()
     conn.close()
+
+def save_resilience_plan(region: str, housing_type: str, base_resilience_score: float) -> None:
+    """Saves a climate resilience assessment to the database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO resilience_plans (region, housing_type, base_resilience_score)
+        VALUES (?, ?, ?)
+    """, (region, housing_type, base_resilience_score))
+    conn.commit()
+    conn.close()
+
+def get_resilience_history() -> list:
+    """Retrieves historical climate resilience assessments."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT region, housing_type, base_resilience_score, timestamp FROM resilience_plans ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
 
 def get_virtual_water_history() -> list:
     """Retrieves historical virtual water logs."""
