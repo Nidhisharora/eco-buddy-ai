@@ -16,9 +16,13 @@ from src.ai.recommendation_decision_engine import (
     personalize_wording,
     LATEST_RULE_VERSION,
 )
+from src.core.metric_normalization import (
+    CanonicalMetric,
+    get_metric_normalizer,
+    MetricType,
+)
 
 logger = logging.getLogger(__name__)
-
 class Priority(Enum):
     LOW = 1
     MEDIUM = 2
@@ -587,8 +591,43 @@ class RecommendationEngine:
 
         return [d.to_dict() for d in decisions]
 
-    def get_recommendation_by_id(self, rec_id: str) -> Optional[Dict[str, Any]]:        """Get a specific recommendation by ID."""
-        rec = self._recommendation_db.get(rec_id)
+    def generate_recommendations_from_normalized_metrics(
+        self,
+        metrics: List[CanonicalMetric],
+        user_id: int,
+        limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """Generate recommendations based on normalized environmental metrics.
+        
+        This method accepts metrics that have been normalized into the
+        canonical form (from src/core/metric_normalization), extracts
+        relevant values, and generates recommendations.
+        
+        Args:
+            metrics: List of CanonicalMetric objects from various sources
+            user_id: User ID for filtering
+            limit: Max number of recommendations to return
+        
+        Returns:
+            List of recommendation dicts
+        """
+        # Extract metric values from canonical representation
+        decision_inputs = {}
+        
+        for metric in metrics:
+            if metric.metric_type == MetricType.CARBON_FOOTPRINT_KG_CO2E:
+                decision_inputs["carbon_kg_co2e"] = metric.value
+            elif metric.metric_type == MetricType.ENERGY_CONSUMPTION_KWH:
+                decision_inputs["electricity_kwh_month"] = metric.value
+            elif metric.metric_type == MetricType.WATER_CONSUMPTION_LITERS:
+                decision_inputs["water_liters_day"] = metric.value
+            elif metric.metric_type == MetricType.DISTANCE_TRAVELED_KM:
+                decision_inputs["transport_km_week"] = metric.value
+        
+        # Use normalized metrics for recommendation generation
+        return self.generate_versioned_decisions(decision_inputs, limit=limit) if decision_inputs else []
+
+    def get_recommendation_by_id(self, rec_id: str) -> Optional[Dict[str, Any]]:        rec = self._recommendation_db.get(rec_id)
         return rec.to_dict() if rec else None
     
     def get_recommendations_by_category(self, category: str) -> List[Dict[str, Any]]:
