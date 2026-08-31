@@ -4,26 +4,27 @@ from datetime import datetime, timedelta
 from src.core.database_connection import database_connection, execute_with_retry
 from src.core.cache import cached
 from src.core.cache_config import TTL_DB_READ, CACHE_CATEGORY_DB_READS
-from src.core.invalidation import (
-    invalidate_on_assessment_save,
-    invalidate_on_assessment_undo,
-    invalidate_on_appliance_change,
-    invalidate_on_solar_config_save,
-    invalidate_on_challenge_enroll,
-    invalidate_on_challenge_progress,
-    invalidate_on_challenge_complete,
-    invalidate_on_xp_award,
-    invalidate_on_badge_unlock,
-    invalidate_on_skill_tree_update,
-    invalidate_on_journey_save,
-    invalidate_on_journey_delete,
-    invalidate_on_offset_save,
-    invalidate_on_offset_delete,
-    invalidate_on_offset_clear,
-    invalidate_on_water_assessment_save,
-    invalidate_on_reduction_goal_change,
-    invalidate_on_freeze_token_change,
-    invalidate_on_time_capsule_change,
+from src.core.event_bus import EventBus
+from src.core.domain_events import (
+    AssessmentSaved,
+    AssessmentUndone,
+    ApplianceChanged,
+    SolarConfigSaved,
+    ChallengeEnrolled,
+    ChallengeProgressed,
+    ChallengeCompleted,
+    XPAwarded,
+    BadgeUnlocked,
+    SkillTreeUpdated,
+    JourneySaved,
+    JourneyDeleted,
+    OffsetSaved,
+    OffsetDeleted,
+    OffsetCleared,
+    WaterAssessmentSaved,
+    ReductionGoalChanged,
+    FreezeTokenChanged,
+    TimeCapsuleChanged,
 )
 import streamlit as st
 import bcrypt
@@ -113,6 +114,16 @@ def init_db() -> bool:
                 """)
 
                 cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS resilience_plans (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        region TEXT,
+                        housing_type TEXT,
+                        base_resilience_score REAL,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+
+                cursor.execute("""
                     CREATE TABLE IF NOT EXISTS event_plans (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         guest_count INTEGER,
@@ -134,6 +145,17 @@ def init_db() -> bool:
                 """)
 
                 cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS repair_logs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        product_key TEXT,
+                        replaced_part TEXT,
+                        status TEXT,
+                        carbon_saved_kg REAL,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+
+                cursor.execute("""
                     CREATE TABLE IF NOT EXISTS anomaly_alerts (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         user_id TEXT,
@@ -141,6 +163,16 @@ def init_db() -> bool:
                         carbon_kg REAL,
                         severity TEXT,
                         resolved BOOLEAN DEFAULT 0,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS portfolio_analyses (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        total_invested REAL,
+                        total_emissions REAL,
+                        alignment_score REAL,
                         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
@@ -1069,7 +1101,7 @@ def save_assessment(
 
         conn.commit()
         conn.close()
-        invalidate_on_assessment_save()
+        EventBus.publish(AssessmentSaved())
         return True
     except sqlite3.IntegrityError:
         return False
@@ -1463,7 +1495,7 @@ def undo_last_assessment(user_id: int = 1) -> tuple[bool, str, dict[str, Any] | 
         conn.commit()
         conn.close()
 
-        invalidate_on_assessment_undo()
+        EventBus.publish(AssessmentUndone())
         record_dict = {
             "id": rec_id,
             "date": date,
@@ -1534,7 +1566,7 @@ def restore_last_deleted_assessment(user_id: int = 1) -> tuple[bool, str, dict[s
         conn.commit()
         conn.close()
 
-        invalidate_on_assessment_save()
+        EventBus.publish(AssessmentSaved())
         return True, f"Successfully restored assessment #{new_id}.", {"id": new_id, "footprint": footprint}
     except sqlite3.Error as e:
         logger.error("Restore assessment error: %s", e)
@@ -1808,7 +1840,7 @@ def add_appliance(user_id: int, name: str, category: str, quantity: int, power_r
         """, (user_id, name, category, quantity, power_rating, hours_used, standby_draw))
         conn.commit()
         conn.close()
-        invalidate_on_appliance_change()
+        EventBus.publish(ApplianceChanged())
         return True
     except sqlite3.Error as e:
         print(f"Appliance save error: {e}")
@@ -1822,7 +1854,7 @@ def delete_appliance(app_id: int) -> bool:
         cursor.execute("DELETE FROM appliances WHERE id = ?", (app_id,))
         conn.commit()
         conn.close()
-        invalidate_on_appliance_change()
+        EventBus.publish(ApplianceChanged())
         return True
     except sqlite3.Error as e:
         return False
@@ -1857,7 +1889,7 @@ def save_solar_config(user_id: int, roof_space: float, peak_sun_hours: float, ut
         """, (user_id, roof_space, peak_sun_hours, utility_rate, panel_efficiency, install_cost, maint_cost, rate_inc))
         conn.commit()
         conn.close()
-        invalidate_on_solar_config_save()
+        EventBus.publish(SolarConfigSaved())
         return True
     except sqlite3.Error as e:
         return False
@@ -1984,7 +2016,7 @@ def enroll_challenge(user_id: int, challenge_id: str) -> bool:
             VALUES (?, ?, 'enrolled')
         """, (user_id, challenge_id))
         conn.commit()
-        invalidate_on_challenge_enroll()
+        EventBus.publish(ChallengeEnrolled())
         return True
     except sqlite3.Error as e:
         print(f"enroll_challenge error: {e}")
@@ -2014,7 +2046,7 @@ def update_challenge_progress(user_id: int, challenge_id: str, progress_incremen
             """, (set_progress, user_id, challenge_id))
             
         conn.commit()
-        invalidate_on_challenge_enroll()
+        EventBus.publish(ChallengeEnrolled())
         return True
     except sqlite3.Error as e:
         print(f"update_challenge_progress error: {e}")
@@ -2037,7 +2069,7 @@ def complete_challenge(user_id: int, challenge_id: str) -> bool:
         """, (user_id, challenge_id))
         
         conn.commit()
-        invalidate_on_challenge_enroll()
+        EventBus.publish(ChallengeEnrolled())
         return True
     except sqlite3.Error as e:
         print(f"complete_challenge error: {e}")
@@ -2077,13 +2109,13 @@ def award_xp(user_id: int, source_type: str, source_id: str, xp_amount: int, des
         
         if source_type == 'challenge':
             cursor.execute("UPDATE user_challenges SET xp_awarded = 1 WHERE user_id = ? AND challenge_id = ?", (user_id, source_id))
-            invalidate_on_challenge_enroll()
+            EventBus.publish(ChallengeEnrolled())
         elif source_type == 'badge':
             cursor.execute("UPDATE unlocked_badges SET xp_awarded = 1 WHERE user_id = ? AND badge_id = ?", (user_id, source_id))
-            invalidate_on_badge_unlock()
+            EventBus.publish(BadgeUnlocked())
             
         conn.commit()
-        invalidate_on_xp_award()
+        EventBus.publish(XPAwarded())
         return True
     except sqlite3.IntegrityError:
         return False
@@ -2124,8 +2156,8 @@ def unlock_badge_in_db(user_id: int, badge_id: str) -> bool:
         """, (user_id, badge_id))
         
         conn.commit()
-        invalidate_on_badge_unlock()
-        invalidate_on_xp_award()
+        EventBus.publish(BadgeUnlocked())
+        EventBus.publish(XPAwarded())
         return True
     except sqlite3.IntegrityError:
         return False
@@ -2245,7 +2277,7 @@ def update_skill_node_status(user_id: int, node_id: str, status: str) -> bool:
                 """, (user_id, node_id, status))
                 
         conn.commit()
-        invalidate_on_skill_tree_update()
+        EventBus.publish(SkillTreeUpdated())
         return True
     except sqlite3.Error as e:
         print(f"update_skill_node_status error: {e}")
@@ -2323,7 +2355,7 @@ def save_journey_profile(user_id: int, name: str, distance_km: float, transport_
         ''', (user_id, name, distance_km, transport_mode, passenger_count, trips_per_week, is_commute))
         
         conn.commit()
-        invalidate_on_journey_save()
+        EventBus.publish(JourneySaved())
         return True
     except Exception as e:
         print(f'save_journey_profile error: {e}')
@@ -2357,7 +2389,7 @@ def delete_journey_profile(profile_id: int) -> bool:
         cursor = conn.cursor()
         cursor.execute('DELETE FROM journey_profiles WHERE id = ?', (profile_id,))
         conn.commit()
-        invalidate_on_journey_save()
+        EventBus.publish(JourneySaved())
         return True
     except Exception:
         return False
@@ -2378,7 +2410,7 @@ def save_offset_transaction(user_id: int, project_id: str, project_name: str, of
         ''', (user_id, project_id, project_name, offset_tonnes, cost_per_tonne, total_cost, transaction_status))
         
         conn.commit()
-        invalidate_on_offset_save()
+        EventBus.publish(OffsetSaved())
         return True
     except Exception as e:
         print(f'save_offset_transaction error: {e}')
@@ -2412,7 +2444,7 @@ def delete_offset_transaction(transaction_id: int) -> bool:
         cursor = conn.cursor()
         cursor.execute('DELETE FROM offset_transactions WHERE id = ?', (transaction_id,))
         conn.commit()
-        invalidate_on_offset_save()
+        EventBus.publish(OffsetSaved())
         return True
     except Exception:
         return False
@@ -2428,7 +2460,7 @@ def clear_offset_transactions(user_id: int) -> bool:
         cursor = conn.cursor()
         cursor.execute('DELETE FROM offset_transactions WHERE user_id = ?', (user_id,))
         conn.commit()
-        invalidate_on_offset_save()
+        EventBus.publish(OffsetSaved())
         return True
     except Exception:
         return False
@@ -2520,7 +2552,7 @@ def save_water_assessment(user_id: int, shower: float, laundry: float, dishwashe
         ''', (user_id, shower, laundry, dishwasher, garden, diet, total_liters))
         
         conn.commit()
-        invalidate_on_water_assessment_save()
+        EventBus.publish(WaterAssessmentSaved())
         return True
     except Exception as e:
         print(f'save_water_assessment error: {e}')
@@ -2817,7 +2849,7 @@ def award_freeze_tokens(user_id: int, amount: int, reason: str) -> bool:
             VALUES (?, ?, ?)
         """, (user_id, amount, reason))
         conn.commit()
-        invalidate_on_freeze_token_change()
+        EventBus.publish(FreezeTokenChanged())
         return True
     except sqlite3.Error as e:
         logger.error("award_freeze_tokens error: %s", e)
@@ -2846,7 +2878,7 @@ def redeem_freeze_token(user_id: int) -> bool:
             VALUES (?, ?, ?)
         """, (user_id, -1, 'redeem'))
         conn.commit()
-        invalidate_on_freeze_token_change()
+        EventBus.publish(FreezeTokenChanged())
         return True
     except sqlite3.Error as e:
         logger.error("redeem_freeze_token error: %s", e)
@@ -2866,7 +2898,7 @@ def use_streak_freeze(user_id: int, frozen_date: str) -> bool:
             VALUES (?, ?)
         """, (user_id, frozen_date))
         conn.commit()
-        invalidate_on_freeze_token_change()
+        EventBus.publish(FreezeTokenChanged())
         return cursor.rowcount > 0
     except sqlite3.Error as e:
         logger.error("use_streak_freeze error: %s", e)
@@ -3023,7 +3055,7 @@ def save_reduction_goal(user_id: int, baseline_kg: float, target_kg: float, star
         ))
         goal_id = cursor.lastrowid
         conn.commit()
-        invalidate_on_reduction_goal_change()
+        EventBus.publish(ReductionGoalChanged())
         return goal_id
     except sqlite3.Error as exc:
         logger.error("Unable to save reduction goal: %s", exc)
@@ -3099,7 +3131,7 @@ def update_goal_status(goal_id: int, status: str) -> bool:
         )
         changed = cursor.rowcount > 0
         conn.commit()
-        invalidate_on_reduction_goal_change()
+        EventBus.publish(ReductionGoalChanged())
         return changed
     except sqlite3.Error as exc:
         logger.error("Unable to update goal status: %s", exc)
@@ -3129,7 +3161,7 @@ def delete_reduction_goal(goal_id: int) -> bool:
         cursor.execute("DELETE FROM reduction_goals WHERE id = ?", (goal_id,))
         deleted = cursor.rowcount > 0
         conn.commit()
-        invalidate_on_reduction_goal_change()
+        EventBus.publish(ReductionGoalChanged())
         return deleted
     except sqlite3.Error as exc:
         logger.error("Unable to delete reduction goal: %s", exc)
@@ -3618,7 +3650,7 @@ def create_time_capsule(user_id: int, title: str, promise_text: str, category: s
             VALUES (?, ?, ?, ?, ?)
         """, (user_id, title, promise_text, category, unlock_date))
         conn.commit()
-        invalidate_on_time_capsule_change()
+        EventBus.publish(TimeCapsuleChanged())
         return True
     except sqlite3.Error as e:
         logger.error("create_time_capsule error: %s", e)
@@ -3663,7 +3695,7 @@ def update_time_capsule_unlock(capsule_id: int) -> bool:
             WHERE id = ? AND is_unlocked = 0
         """, (capsule_id,))
         conn.commit()
-        invalidate_on_time_capsule_change()
+        EventBus.publish(TimeCapsuleChanged())
         return cursor.rowcount > 0
     except sqlite3.Error as e:
         logger.error("update_time_capsule_unlock error: %s", e)
@@ -3684,7 +3716,7 @@ def update_time_capsule_progress(capsule_id: int, progress_notes: str) -> bool:
             WHERE id = ?
         """, (progress_notes, capsule_id))
         conn.commit()
-        invalidate_on_time_capsule_change()
+        EventBus.publish(TimeCapsuleChanged())
         return True
     except sqlite3.Error as e:
         logger.error("update_time_capsule_progress error: %s", e)
@@ -3701,7 +3733,7 @@ def delete_time_capsule(capsule_id: int) -> bool:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM time_capsules WHERE id = ?", (capsule_id,))
         conn.commit()
-        invalidate_on_time_capsule_change()
+        EventBus.publish(TimeCapsuleChanged())
         return True
     except sqlite3.Error as e:
         logger.error("delete_time_capsule error: %s", e)
@@ -4668,26 +4700,27 @@ from src.community.challenge_generator import generate_weekly_challenges
 from src.core.database_connection import database_connection, execute_with_retry
 from src.core.cache import cached
 from src.core.cache_config import TTL_DB_READ, CACHE_CATEGORY_DB_READS
-from src.core.invalidation import (
-    invalidate_on_assessment_save,
-    invalidate_on_assessment_undo,
-    invalidate_on_appliance_change,
-    invalidate_on_solar_config_save,
-    invalidate_on_challenge_enroll,
-    invalidate_on_challenge_progress,
-    invalidate_on_challenge_complete,
-    invalidate_on_xp_award,
-    invalidate_on_badge_unlock,
-    invalidate_on_skill_tree_update,
-    invalidate_on_journey_save,
-    invalidate_on_journey_delete,
-    invalidate_on_offset_save,
-    invalidate_on_offset_delete,
-    invalidate_on_offset_clear,
-    invalidate_on_water_assessment_save,
-    invalidate_on_reduction_goal_change,
-    invalidate_on_freeze_token_change,
-    invalidate_on_time_capsule_change,
+from src.core.event_bus import EventBus
+from src.core.domain_events import (
+    AssessmentSaved,
+    AssessmentUndone,
+    ApplianceChanged,
+    SolarConfigSaved,
+    ChallengeEnrolled,
+    ChallengeProgressed,
+    ChallengeCompleted,
+    XPAwarded,
+    BadgeUnlocked,
+    SkillTreeUpdated,
+    JourneySaved,
+    JourneyDeleted,
+    OffsetSaved,
+    OffsetDeleted,
+    OffsetCleared,
+    WaterAssessmentSaved,
+    ReductionGoalChanged,
+    FreezeTokenChanged,
+    TimeCapsuleChanged,
 )
 import streamlit as st
 import bcrypt
@@ -5199,7 +5232,7 @@ def save_assessment(
 
         conn.commit()
         conn.close()
-        invalidate_on_assessment_save()
+        EventBus.publish(AssessmentSaved())
         return True
     except sqlite3.IntegrityError:
         return False
@@ -5208,8 +5241,200 @@ def save_assessment(
         return False
 
 
-def get_assessment_snapshot(assessment_id: int) -> dict[str, Any] | None:
+def get_assessment_by_id(assessment_id: int, user_id: int = 1) -> dict[str, Any] | None:
     """
+    Fetch a single assessment together with its concurrency metadata (#1467).
+
+    Used by update_assessment()/finalize_assessment() to build the
+    "current" payload returned on a conflict, and by the frontend to
+    reload the latest row after a stale-edit conflict.
+    """
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, user_id, transport, distance, electricity, diet,
+                   flights, footprint, eco_score, revision, is_finalized,
+                   updated_at
+            FROM assessments
+            WHERE id = ? AND user_id = ?
+            """,
+            (assessment_id, user_id),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if row is None:
+            return None
+        keys = [
+            "id", "user_id", "transport", "distance", "electricity", "diet",
+            "flights", "footprint", "eco_score", "revision", "is_finalized",
+            "updated_at",
+        ]
+        return dict(zip(keys, row))
+    except sqlite3.Error as e:
+        print(f"Database get_assessment_by_id error: {e}")
+        return None
+
+
+_ASSESSMENT_EDITABLE_COLUMNS = {
+    "transport", "distance", "electricity", "diet", "flights",
+    "footprint", "eco_score",
+}
+
+
+def update_assessment(
+    assessment_id: int,
+    user_id: int,
+    expected_revision: int,
+    updates: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Apply a partial update to an assessment using optimistic concurrency
+    control (#1467).
+
+    The caller passes `expected_revision`, the revision it last read. The
+    UPDATE's WHERE clause checks and applies the change in a single atomic
+    statement (`revision = expected_revision`), so two requests racing on
+    stale data can never both succeed - the second one simply matches zero
+    rows. A finalized assessment (`is_finalized = 1`) is likewise excluded,
+    so it can't be edited by accident.
+
+    `updates` may contain any of: transport, distance, electricity, diet,
+    flights, footprint, eco_score. Unknown keys are ignored.
+
+    Returns one of:
+        {"status": "ok", "revision": <new revision>}
+        {"status": "conflict", "current": {...latest row...}}
+        {"status": "finalized", "current": {...latest row...}}
+        {"status": "not_found"}
+        {"status": "error", "error": "..."}
+    """
+    set_columns = [c for c in updates if c in _ASSESSMENT_EDITABLE_COLUMNS]
+    if not set_columns:
+        return {"status": "error", "error": "No valid columns supplied"}
+
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+
+        assignments = ", ".join(f"{c} = ?" for c in set_columns)
+        values = [updates[c] for c in set_columns]
+
+        cursor.execute(
+            f"""
+            UPDATE assessments
+            SET {assignments}, revision = revision + 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND user_id = ? AND revision = ? AND is_finalized = 0
+            """,
+            (*values, assessment_id, user_id, expected_revision),
+        )
+
+        if cursor.rowcount == 1:
+            conn.commit()
+            conn.close()
+            invalidate_on_assessment_save()
+            return {"status": "ok", "revision": expected_revision + 1}
+
+        # Nothing matched: work out why, so the caller/UI gets a precise
+        # reason instead of a generic failure.
+        conn.close()
+        current = get_assessment_by_id(assessment_id, user_id)
+        if current is None:
+            return {"status": "not_found"}
+        if current["is_finalized"]:
+            return {"status": "finalized", "current": current}
+        return {"status": "conflict", "current": current}
+    except sqlite3.Error as e:
+        print(f"Database update_assessment error: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+def finalize_assessment(
+    assessment_id: int, user_id: int, expected_revision: int
+) -> dict[str, Any]:
+    """
+    Mark an assessment finalized (#1467). Uses the same revision check as
+    update_assessment(), so finalizing stale data is rejected the same way
+    an edit would be. Once finalized, update_assessment() refuses further
+    changes until reopen_finalized_assessment() is called explicitly.
+    """
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE assessments
+            SET is_finalized = 1, revision = revision + 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND user_id = ? AND revision = ? AND is_finalized = 0
+            """,
+            (assessment_id, user_id, expected_revision),
+        )
+
+        if cursor.rowcount == 1:
+            conn.commit()
+            conn.close()
+            invalidate_on_assessment_save()
+            return {"status": "ok", "revision": expected_revision + 1}
+
+        conn.close()
+        current = get_assessment_by_id(assessment_id, user_id)
+        if current is None:
+            return {"status": "not_found"}
+        if current["is_finalized"]:
+            return {"status": "finalized", "current": current}
+        return {"status": "conflict", "current": current}
+    except sqlite3.Error as e:
+        print(f"Database finalize_assessment error: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+def reopen_finalized_assessment(
+    assessment_id: int, user_id: int, expected_revision: int
+) -> dict[str, Any]:
+    """
+    Explicit revision workflow (#1467) for editing a finalized assessment.
+
+    This is the only way to make a finalized row editable again - it is a
+    separate, deliberate call rather than something update_assessment()
+    does implicitly, so a finalized assessment can never be modified by
+    accident. Still revision-checked, so reopening itself can't silently
+    clobber a finalize that happened after the caller last read the row.
+    """
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE assessments
+            SET is_finalized = 0, revision = revision + 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND user_id = ? AND revision = ? AND is_finalized = 1
+            """,
+            (assessment_id, user_id, expected_revision),
+        )
+
+        if cursor.rowcount == 1:
+            conn.commit()
+            conn.close()
+            invalidate_on_assessment_save()
+            return {"status": "ok", "revision": expected_revision + 1}
+
+        conn.close()
+        current = get_assessment_by_id(assessment_id, user_id)
+        if current is None:
+            return {"status": "not_found"}
+        if not current["is_finalized"]:
+            return {"status": "not_finalized", "current": current}
+        return {"status": "conflict", "current": current}
+    except sqlite3.Error as e:
+        print(f"Database reopen_finalized_assessment error: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+def get_assessment_snapshot(assessment_id: int) -> dict[str, Any] | None:    """
     Read back the immutable calculation snapshot for one assessment.
 
     Returns None when no snapshot was stored for this assessment (e.g. rows
@@ -5449,7 +5674,7 @@ def undo_last_assessment(user_id: int = 1) -> tuple[bool, str, dict[str, Any] | 
         conn.commit()
         conn.close()
 
-        invalidate_on_assessment_undo()
+        EventBus.publish(AssessmentUndone())
         record_dict = {
             "id": rec_id,
             "date": date,
@@ -5520,7 +5745,7 @@ def restore_last_deleted_assessment(user_id: int = 1) -> tuple[bool, str, dict[s
         conn.commit()
         conn.close()
 
-        invalidate_on_assessment_save()
+        EventBus.publish(AssessmentSaved())
         return True, f"Successfully restored assessment #{new_id}.", {"id": new_id, "footprint": footprint}
     except sqlite3.Error as e:
         logger.error("Restore assessment error: %s", e)
@@ -5794,7 +6019,7 @@ def add_appliance(user_id: int, name: str, category: str, quantity: int, power_r
         """, (user_id, name, category, quantity, power_rating, hours_used, standby_draw))
         conn.commit()
         conn.close()
-        invalidate_on_appliance_change()
+        EventBus.publish(ApplianceChanged())
         return True
     except sqlite3.Error as e:
         print(f"Appliance save error: {e}")
@@ -5808,7 +6033,7 @@ def delete_appliance(app_id: int) -> bool:
         cursor.execute("DELETE FROM appliances WHERE id = ?", (app_id,))
         conn.commit()
         conn.close()
-        invalidate_on_appliance_change()
+        EventBus.publish(ApplianceChanged())
         return True
     except sqlite3.Error as e:
         return False
@@ -5843,7 +6068,7 @@ def save_solar_config(user_id: int, roof_space: float, peak_sun_hours: float, ut
         """, (user_id, roof_space, peak_sun_hours, utility_rate, panel_efficiency, install_cost, maint_cost, rate_inc))
         conn.commit()
         conn.close()
-        invalidate_on_solar_config_save()
+        EventBus.publish(SolarConfigSaved())
         return True
     except sqlite3.Error as e:
         return False
@@ -5851,3 +6076,3106 @@ def save_solar_config(user_id: int, roof_space: float, peak_sun_hours: float, ut
 
 @cached(category=CACHE_CATEGORY_DB_READS, ttl=TTL_DB_READ)
 def 
+def get_solar_config(user_id: int = 1) -> dict[str, Any] | None:
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM solar_configs WHERE user_id = ? LIMIT 1", (user_id,))
+        columns = [column[0] for column in cursor.description]
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return dict(zip(columns, row))
+        return None
+    except sqlite3.Error as e:
+        return None
+
+
+def init_gamification_db() -> bool:
+    """
+    Initialize gamification-related tables.
+    
+    Returns:
+        bool: True if initialization succeeded, False otherwise
+    """
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        
+        # Run migrations to ensure schema is up to date
+        migrate()
+        
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS user_challenges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                challenge_id TEXT NOT NULL,
+                progress_value REAL DEFAULT 0.0,
+                status TEXT DEFAULT 'enrolled',
+                enrolled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP,
+                xp_awarded BOOLEAN DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS unlocked_badges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                badge_id TEXT NOT NULL,
+                unlocked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                xp_awarded BOOLEAN DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, badge_id)
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS xp_transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                source_type TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                xp_amount INTEGER NOT NULL,
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, source_type, source_id)
+            )
+        """)
+        
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_xp_user ON xp_transactions(user_id)")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS user_cards (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                card_id TEXT NOT NULL,
+                unlocked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, card_id)
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS skill_tree_progress (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                node_id TEXT NOT NULL,
+                status TEXT DEFAULT 'Locked',
+                completed_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, node_id)
+            )
+        """)
+        conn.commit()
+        return True
+    except sqlite3.Error as e:
+        print(f"Database gamification init error: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def enroll_challenge(user_id: int, challenge_id: str) -> bool:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT id FROM user_challenges WHERE user_id=? AND challenge_id=? AND status != 'expired'", (user_id, challenge_id))
+        if cursor.fetchone():
+            return False
+            
+        cursor.execute("""
+            INSERT INTO user_challenges (user_id, challenge_id, status)
+            VALUES (?, ?, 'enrolled')
+        """, (user_id, challenge_id))
+        conn.commit()
+        EventBus.publish(ChallengeEnrolled())
+        return True
+    except sqlite3.Error as e:
+        print(f"enroll_challenge error: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def update_challenge_progress(user_id: int, challenge_id: str, progress_increment: float | None = None, set_progress: float | None = None) -> bool:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        if progress_increment is not None:
+            cursor.execute("""
+                UPDATE user_challenges 
+                SET progress_value = progress_value + ?, updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = ? AND challenge_id = ? AND status = 'enrolled'
+            """, (progress_increment, user_id, challenge_id))
+        elif set_progress is not None:
+             cursor.execute("""
+                UPDATE user_challenges 
+                SET progress_value = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = ? AND challenge_id = ? AND status = 'enrolled'
+            """, (set_progress, user_id, challenge_id))
+            
+        conn.commit()
+        EventBus.publish(ChallengeEnrolled())
+        return True
+    except sqlite3.Error as e:
+        print(f"update_challenge_progress error: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def complete_challenge(user_id: int, challenge_id: str) -> bool:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            UPDATE user_challenges 
+            SET status = 'completed', completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+            WHERE user_id = ? AND challenge_id = ? AND status = 'enrolled'
+        """, (user_id, challenge_id))
+        
+        conn.commit()
+        EventBus.publish(ChallengeEnrolled())
+        return True
+    except sqlite3.Error as e:
+        print(f"complete_challenge error: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+@cached(category=CACHE_CATEGORY_DB_READS, ttl=TTL_DB_READ)
+def get_user_challenges(user_id: int) -> list[dict[str, Any]]:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM user_challenges WHERE user_id = ?", (user_id,))
+        columns = [column[0] for column in cursor.description]
+        data = cursor.fetchall()
+        return [dict(zip(columns, row)) for row in data]
+    except sqlite3.Error as e:
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+def award_xp(user_id: int, source_type: str, source_id: str, xp_amount: int, description: str) -> bool:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            INSERT INTO xp_transactions (user_id, source_type, source_id, xp_amount, description)
+            VALUES (?, ?, ?, ?, ?)
+        """, (user_id, source_type, source_id, xp_amount, description))
+        
+        if source_type == 'challenge':
+            cursor.execute("UPDATE user_challenges SET xp_awarded = 1 WHERE user_id = ? AND challenge_id = ?", (user_id, source_id))
+            EventBus.publish(ChallengeEnrolled())
+        elif source_type == 'badge':
+            cursor.execute("UPDATE unlocked_badges SET xp_awarded = 1 WHERE user_id = ? AND badge_id = ?", (user_id, source_id))
+            EventBus.publish(BadgeUnlocked())
+            
+        conn.commit()
+        EventBus.publish(XPAwarded())
+        return True
+    except sqlite3.IntegrityError:
+        return False
+    except sqlite3.Error as e:
+        print(f"award_xp error: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+@cached(category=CACHE_CATEGORY_DB_READS, ttl=TTL_DB_READ)
+def get_total_xp(user_id: int) -> int:
+    
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("SELECT SUM(xp_amount) FROM xp_transactions WHERE user_id = ?", (user_id,))
+        total = cursor.fetchone()[0]
+        return total if total else 0
+    except sqlite3.Error:
+        return 0
+    finally:
+        if conn:
+            conn.close()
+
+
+def unlock_badge_in_db(user_id: int, badge_id: str) -> bool:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            INSERT INTO unlocked_badges (user_id, badge_id)
+            VALUES (?, ?)
+        """, (user_id, badge_id))
+        
+        conn.commit()
+        EventBus.publish(BadgeUnlocked())
+        EventBus.publish(XPAwarded())
+        return True
+    except sqlite3.IntegrityError:
+        return False
+    except sqlite3.Error as e:
+        print(f"unlock_badge_in_db error: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+@cached(category=CACHE_CATEGORY_DB_READS, ttl=TTL_DB_READ)
+def get_unlocked_badges(user_id: int) -> list[dict[str, Any]]:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM unlocked_badges WHERE user_id = ?", (user_id,))
+        columns = [column[0] for column in cursor.description]
+        data = cursor.fetchall()
+        return [dict(zip(columns, row)) for row in data]
+    except sqlite3.Error as e:
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+def unlock_card_in_db(user_id: int, card_id: str) -> bool:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            INSERT INTO user_cards (user_id, card_id)
+            VALUES (?, ?)
+        """, (user_id, card_id))
+
+        conn.commit()
+        get_unlocked_cards.clear()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+    except sqlite3.Error as e:
+        print(f"unlock_card_in_db error: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+@st.cache_data
+def get_unlocked_cards(user_id: int) -> list[dict[str, Any]]:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM user_cards WHERE user_id = ?", (user_id,))
+        columns = [column[0] for column in cursor.description]
+        data = cursor.fetchall()
+        return [dict(zip(columns, row)) for row in data]
+    except sqlite3.Error as e:
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+@cached(category=CACHE_CATEGORY_DB_READS, ttl=TTL_DB_READ)
+def get_skill_tree_progress(user_id: int) -> list[dict[str, Any]]:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM skill_tree_progress WHERE user_id = ?", (user_id,))
+        columns = [column[0] for column in cursor.description]
+        data = cursor.fetchall()
+        return [dict(zip(columns, row)) for row in data]
+    except sqlite3.Error as e:
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+def update_skill_node_status(user_id: int, node_id: str, status: str) -> bool:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT id FROM skill_tree_progress WHERE user_id=? AND node_id=?", (user_id, node_id))
+        if cursor.fetchone():
+            if status == 'Completed':
+                cursor.execute("""
+                    UPDATE skill_tree_progress 
+                    SET status = ?, completed_at = CURRENT_TIMESTAMP
+                    WHERE user_id = ? AND node_id = ?
+                """, (status, user_id, node_id))
+            else:
+                cursor.execute("""
+                    UPDATE skill_tree_progress 
+                    SET status = ?
+                    WHERE user_id = ? AND node_id = ?
+                """, (status, user_id, node_id))
+        else:
+            if status == 'Completed':
+                cursor.execute("""
+                    INSERT INTO skill_tree_progress (user_id, node_id, status, completed_at)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                """, (user_id, node_id, status))
+            else:
+                cursor.execute("""
+                    INSERT INTO skill_tree_progress (user_id, node_id, status)
+                    VALUES (?, ?, ?)
+                """, (user_id, node_id, status))
+                
+        conn.commit()
+        EventBus.publish(SkillTreeUpdated())
+        return True
+    except sqlite3.Error as e:
+        print(f"update_skill_node_status error: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def init_marketplace_db() -> bool:
+    """
+    Initialize marketplace-related tables (journey_profiles, offset_transactions).
+    
+    Returns:
+        bool: True if initialization succeeded, False otherwise
+    """
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        
+        # Run migrations to ensure schema is up to date
+        migrate()
+        
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS journey_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                name TEXT NOT NULL,
+                distance_km REAL NOT NULL,
+                transport_mode TEXT NOT NULL,
+                passenger_count INTEGER DEFAULT 1,
+                trips_per_week INTEGER DEFAULT 1,
+                is_commute BOOLEAN DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS offset_transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                project_id TEXT NOT NULL,
+                project_name TEXT NOT NULL,
+                offset_tonnes REAL NOT NULL,
+                cost_per_tonne REAL NOT NULL,
+                total_cost REAL NOT NULL,
+                transaction_status TEXT DEFAULT 'completed',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f'Database marketplace init error: {e}')
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def save_journey_profile(user_id: int, name: str, distance_km: float, transport_mode: str, passenger_count: int, trips_per_week: int, is_commute: bool) -> bool:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO journey_profiles (user_id, name, distance_km, transport_mode, passenger_count, trips_per_week, is_commute)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (user_id, name, distance_km, transport_mode, passenger_count, trips_per_week, is_commute))
+        
+        conn.commit()
+        EventBus.publish(JourneySaved())
+        return True
+    except Exception as e:
+        print(f'save_journey_profile error: {e}')
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+@cached(category=CACHE_CATEGORY_DB_READS, ttl=TTL_DB_READ)
+def get_journey_profiles(user_id: int) -> list[dict[str, Any]]:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM journey_profiles WHERE user_id = ? ORDER BY created_at DESC', (user_id,))
+        columns = [column[0] for column in cursor.description]
+        data = cursor.fetchall()
+        return [dict(zip(columns, row)) for row in data]
+    except Exception:
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+def delete_journey_profile(profile_id: int) -> bool:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM journey_profiles WHERE id = ?', (profile_id,))
+        conn.commit()
+        EventBus.publish(JourneySaved())
+        return True
+    except Exception:
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def save_offset_transaction(user_id: int, project_id: str, project_name: str, offset_tonnes: float, cost_per_tonne: float, total_cost: float, transaction_status: str = 'completed') -> bool:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO offset_transactions (user_id, project_id, project_name, offset_tonnes, cost_per_tonne, total_cost, transaction_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (user_id, project_id, project_name, offset_tonnes, cost_per_tonne, total_cost, transaction_status))
+        
+        conn.commit()
+        EventBus.publish(OffsetSaved())
+        return True
+    except Exception as e:
+        print(f'save_offset_transaction error: {e}')
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+@cached(category=CACHE_CATEGORY_DB_READS, ttl=TTL_DB_READ)
+def get_offset_transactions(user_id: int) -> list[dict[str, Any]]:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM offset_transactions WHERE user_id = ? ORDER BY created_at DESC', (user_id,))
+        columns = [column[0] for column in cursor.description]
+        data = cursor.fetchall()
+        return [dict(zip(columns, row)) for row in data]
+    except Exception:
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+def delete_offset_transaction(transaction_id: int) -> bool:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM offset_transactions WHERE id = ?', (transaction_id,))
+        conn.commit()
+        EventBus.publish(OffsetSaved())
+        return True
+    except Exception:
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def clear_offset_transactions(user_id: int) -> bool:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM offset_transactions WHERE user_id = ?', (user_id,))
+        conn.commit()
+        EventBus.publish(OffsetSaved())
+        return True
+    except Exception:
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+@cached(category=CACHE_CATEGORY_DB_READS, ttl=TTL_DB_READ)
+def get_total_offsets(user_id: int) -> float:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute('SELECT SUM(offset_tonnes) FROM offset_transactions WHERE user_id = ? AND transaction_status != "reversed"', (user_id,))
+        total = cursor.fetchone()[0]
+        return total if total else 0.0
+    except Exception:
+        return 0.0
+    finally:
+        if conn:
+            conn.close()
+
+
+@cached(category=CACHE_CATEGORY_DB_READS, ttl=TTL_DB_READ)
+def get_total_spend(user_id: int) -> float:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute('SELECT SUM(total_cost) FROM offset_transactions WHERE user_id = ? AND transaction_status != "reversed"', (user_id,))
+        total = cursor.fetchone()[0]
+        return total if total else 0.0
+    except Exception:
+        return 0.0
+    finally:
+        if conn:
+            conn.close()
+
+
+def init_water_db() -> bool:
+    """
+    Initialize water consumption table.
+    
+    Returns:
+        bool: True if initialization succeeded, False otherwise
+    """
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        
+        # Run migrations to ensure schema is up to date
+        migrate()
+        
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS water_consumption (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                shower_mins_per_day REAL,
+                laundry_loads_per_week REAL,
+                dishwasher_runs_per_week REAL,
+                garden_mins_per_week REAL,
+                diet TEXT,
+                total_liters REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f'Database water init error: {e}')
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def save_water_assessment(user_id: int, shower: float, laundry: float, dishwasher: float, garden: float, diet: str, total_liters: float) -> bool:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO water_consumption (user_id, shower_mins_per_day, laundry_loads_per_week, dishwasher_runs_per_week, garden_mins_per_week, diet, total_liters)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (user_id, shower, laundry, dishwasher, garden, diet, total_liters))
+        
+        conn.commit()
+        EventBus.publish(WaterAssessmentSaved())
+        return True
+    except Exception as e:
+        print(f'save_water_assessment error: {e}')
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+@cached(category=CACHE_CATEGORY_DB_READS, ttl=TTL_DB_READ)
+def get_water_assessments(user_id: int) -> list[dict[str, Any]]:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM water_consumption WHERE user_id = ? ORDER BY created_at DESC', (user_id,))
+        columns = [column[0] for column in cursor.description]
+        data = cursor.fetchall()
+        return [dict(zip(columns, row)) for row in data]
+    except Exception:
+        return []
+    finally:
+        if conn:
+            conn.close()
+            conn.close()
+
+
+def save_dashboard_widget_preferences(user_id: int, widget_ids: list[str]) -> bool:
+    """Persist the ordered dashboard widget IDs selected by a user."""
+    import json
+
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dashboard_widget_preferences (
+                user_id INTEGER PRIMARY KEY,
+                widgets_json TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+            """
+        )
+        cursor.execute(
+            """
+            INSERT INTO dashboard_widget_preferences (user_id, widgets_json, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id) DO UPDATE SET
+                widgets_json = excluded.widgets_json,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (user_id, json.dumps(list(widget_ids))),
+        )
+        conn.commit()
+        return True
+    except (sqlite3.Error, TypeError, ValueError) as exc:
+        logger.error("Dashboard preference save error: %s", exc)
+        return False
+    finally:
+        if 'conn' in locals():
+            conn.close()
+
+
+def get_dashboard_widget_preferences(user_id: int) -> list[str] | None:
+    """Return the saved widget IDs, or None when the user has no preference."""
+    import json
+
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dashboard_widget_preferences (
+                user_id INTEGER PRIMARY KEY,
+                widgets_json TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+            """
+        )
+        cursor.execute(
+            "SELECT widgets_json FROM dashboard_widget_preferences WHERE user_id = ?",
+            (user_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        value = json.loads(row[0])
+        return value if isinstance(value, list) else None
+    except (sqlite3.Error, json.JSONDecodeError, TypeError) as exc:
+        logger.error("Dashboard preference read error: %s", exc)
+        return None
+    finally:
+        if 'conn' in locals():
+            conn.close()
+
+
+def record_environmental_milestone(
+    user_id: int,
+    milestone_type: str,
+    title: str,
+    description: str,
+    icon: str = "🌱",
+    achieved_at: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> bool:
+    """Persist a milestone once per user and milestone type.
+
+    Returns True only when a new milestone is inserted.
+    """
+    import json
+
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT OR IGNORE INTO environmental_milestones (
+                user_id,
+                milestone_type,
+                title,
+                description,
+                icon,
+                achieved_at,
+                metadata_json
+            )
+            VALUES (?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?)
+            """,
+            (
+                user_id,
+                milestone_type,
+                title,
+                description,
+                icon,
+                achieved_at,
+                json.dumps(metadata or {}, sort_keys=True),
+            ),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
+    except sqlite3.Error as exc:
+        logger.error("Unable to record environmental milestone: %s", exc)
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_environmental_milestones(user_id: int) -> list[dict[str, Any]]:
+    """Return a user's milestones from newest to oldest."""
+    import json
+
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                id,
+                milestone_type,
+                title,
+                description,
+                icon,
+                achieved_at,
+                metadata_json
+            FROM environmental_milestones
+            WHERE user_id = ?
+            ORDER BY datetime(achieved_at) DESC, id DESC
+            """,
+            (user_id,),
+        )
+        milestones = []
+        for row in cursor.fetchall():
+            try:
+                metadata = json.loads(row[6] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            milestones.append(
+                {
+                    "id": row[0],
+                    "milestone_type": row[1],
+                    "title": row[2],
+                    "description": row[3],
+                    "icon": row[4],
+                    "achieved_at": row[5],
+                    "metadata": metadata,
+                }
+            )
+        return milestones
+    except sqlite3.Error as exc:
+        logger.error("Unable to load environmental milestones: %s", exc)
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+def init_freeze_tokens_db() -> bool:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        migrate()
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS freeze_token_balances (
+                user_id INTEGER PRIMARY KEY,
+                balance INTEGER NOT NULL DEFAULT 0,
+                total_earned INTEGER NOT NULL DEFAULT 0,
+                total_used INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS freeze_token_transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                amount INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS streak_freezes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                frozen_date TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, frozen_date)
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_streak_freezes_user_date
+            ON streak_freezes(user_id, frozen_date DESC)
+        """)
+        conn.commit()
+        return True
+    except sqlite3.Error as e:
+        logger.error("Freeze tokens DB init error: %s", e)
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+@cached(category=CACHE_CATEGORY_DB_READS, ttl=TTL_DB_READ)
+def get_freeze_token_balance(user_id: int) -> int:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("SELECT balance FROM freeze_token_balances WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
+        return row[0] if row else 0
+    except sqlite3.Error:
+        return 0
+    finally:
+        if conn:
+            conn.close()
+
+
+def ensure_freeze_token_row(user_id: int) -> bool:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR IGNORE INTO freeze_token_balances (user_id, balance, total_earned, total_used)
+            VALUES (?, 0, 0, 0)
+        """, (user_id,))
+        conn.commit()
+        return True
+    except sqlite3.Error:
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def award_freeze_tokens(user_id: int, amount: int, reason: str) -> bool:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        ensure_freeze_token_row(user_id)
+        cursor.execute("""
+            UPDATE freeze_token_balances
+            SET balance = balance + ?, total_earned = total_earned + ?
+            WHERE user_id = ?
+        """, (amount, amount, user_id))
+        cursor.execute("""
+            INSERT INTO freeze_token_transactions (user_id, amount, reason)
+            VALUES (?, ?, ?)
+        """, (user_id, amount, reason))
+        conn.commit()
+        EventBus.publish(FreezeTokenChanged())
+        return True
+    except sqlite3.Error as e:
+        logger.error("award_freeze_tokens error: %s", e)
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def redeem_freeze_token(user_id: int) -> bool:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("SELECT balance FROM freeze_token_balances WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
+        if not row or row[0] < 1:
+            return False
+        cursor.execute("""
+            UPDATE freeze_token_balances
+            SET balance = balance - 1, total_used = total_used + 1
+            WHERE user_id = ? AND balance >= 1
+        """, (user_id,))
+        cursor.execute("""
+            INSERT INTO freeze_token_transactions (user_id, amount, reason)
+            VALUES (?, ?, ?)
+        """, (user_id, -1, 'redeem'))
+        conn.commit()
+        EventBus.publish(FreezeTokenChanged())
+        return True
+    except sqlite3.Error as e:
+        logger.error("redeem_freeze_token error: %s", e)
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def use_streak_freeze(user_id: int, frozen_date: str) -> bool:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR IGNORE INTO streak_freezes (user_id, frozen_date)
+            VALUES (?, ?)
+        """, (user_id, frozen_date))
+        conn.commit()
+        EventBus.publish(FreezeTokenChanged())
+        return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logger.error("use_streak_freeze error: %s", e)
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+@cached(category=CACHE_CATEGORY_DB_READS, ttl=TTL_DB_READ)
+def get_streak_freeze_dates(user_id: int) -> list[str]:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT frozen_date FROM streak_freezes
+            WHERE user_id = ?
+            ORDER BY frozen_date DESC
+        """, (user_id,))
+        return [row[0] for row in cursor.fetchall()]
+    except sqlite3.Error:
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_freeze_token_transactions(user_id: int) -> list[dict[str, Any]]:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, user_id, amount, reason, created_at
+            FROM freeze_token_transactions
+            WHERE user_id = ?
+            ORDER BY created_at DESC, id DESC
+        """, (user_id,))
+        columns = [column[0] for column in cursor.description]
+        data = cursor.fetchall()
+        return [dict(zip(columns, row)) for row in data]
+    except sqlite3.Error:
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+@cached(category=CACHE_CATEGORY_DB_READS, ttl=TTL_DB_READ)
+def get_total_freeze_tokens_earned(user_id: int) -> int:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("SELECT total_earned FROM freeze_token_balances WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
+        return row[0] if row else 0
+    except sqlite3.Error:
+        return 0
+    finally:
+        if conn:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Reduction goals
+# ---------------------------------------------------------------------------
+
+def init_goals_db() -> bool:
+    """
+    Create the reduction_goals table.
+
+    Kept as its own initializer to match the existing per-feature pattern
+    (init_energy_db, init_gamification_db, init_marketplace_db, init_water_db).
+    """
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS reduction_goals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                baseline_kg REAL NOT NULL,
+                target_kg REAL NOT NULL,
+                start_date TEXT NOT NULL,
+                target_date TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        # A user may only have one active goal at a time; history rows are
+        # archived or completed and are excluded from the index.
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_reduction_goals_active
+            ON reduction_goals(user_id)
+            WHERE status = 'active'
+        """)
+        conn.commit()
+        return True
+    except sqlite3.Error as exc:
+        logger.error("Reduction goals init error: %s", exc)
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def _goal_row_to_dict(row: Any) -> dict[str, Any] | None:
+    """Map a reduction_goals row onto the dict shape src.utils.goals.py expects."""
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "user_id": row[1],
+        "baseline_kg": row[2],
+        "target_kg": row[3],
+        "start_date": row[4],
+        "target_date": row[5],
+        "status": row[6],
+        "created_at": row[7],
+    }
+
+
+def save_reduction_goal(user_id: int, baseline_kg: float, target_kg: float, start_date: str, target_date: str) -> int | None:
+    """
+    Persist a new goal, archiving any goal the user already had active.
+
+    Returns the new goal id, or None if the write failed.
+    """
+    init_goals_db()
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        # Only one active goal per user, so retire the previous one first.
+        cursor.execute(
+            "UPDATE reduction_goals SET status = 'archived' "
+            "WHERE user_id = ? AND status = 'active'",
+            (user_id,),
+        )
+        cursor.execute("""
+            INSERT INTO reduction_goals (
+                user_id, baseline_kg, target_kg, start_date, target_date, status
+            )
+            VALUES (?, ?, ?, ?, ?, 'active')
+        """, (
+            user_id,
+            float(baseline_kg),
+            float(target_kg),
+            str(start_date),
+            str(target_date),
+        ))
+        goal_id = cursor.lastrowid
+        conn.commit()
+        EventBus.publish(ReductionGoalChanged())
+        return goal_id
+    except sqlite3.Error as exc:
+        logger.error("Unable to save reduction goal: %s", exc)
+        return None
+    finally:
+        if conn:
+            conn.close()
+
+
+@cached(category=CACHE_CATEGORY_DB_READS, ttl=TTL_DB_READ)
+def get_active_goal(user_id: int) -> dict[str, Any] | None:
+    """Return the user's current active goal, or None."""
+    init_goals_db()
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, user_id, baseline_kg, target_kg, start_date,
+                   target_date, status, created_at
+            FROM reduction_goals
+            WHERE user_id = ? AND status = 'active'
+            ORDER BY id DESC
+            LIMIT 1
+        """, (user_id,))
+        return _goal_row_to_dict(cursor.fetchone())
+    except sqlite3.Error as exc:
+        logger.error("Unable to load active goal: %s", exc)
+        return None
+    finally:
+        if conn:
+            conn.close()
+
+
+@cached(category=CACHE_CATEGORY_DB_READS, ttl=TTL_DB_READ)
+def get_goal_history(user_id: int) -> list[dict[str, Any]]:
+    """Return every goal the user has ever set, newest first."""
+    init_goals_db()
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, user_id, baseline_kg, target_kg, start_date,
+                   target_date, status, created_at
+            FROM reduction_goals
+            WHERE user_id = ?
+            ORDER BY id DESC
+        """, (user_id,))
+        return [_goal_row_to_dict(row) for row in cursor.fetchall()]
+    except sqlite3.Error as exc:
+        logger.error("Unable to load goal history: %s", exc)
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+def update_goal_status(goal_id: int, status: str) -> bool:
+    """Move a goal to a new lifecycle state (archived / completed / active)."""
+    if status not in ("active", "archived", "completed"):
+        logger.error("Refusing to set unknown goal status: %s", status)
+        return False
+
+    init_goals_db()
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE reduction_goals SET status = ? WHERE id = ?",
+            (status, goal_id),
+        )
+        changed = cursor.rowcount > 0
+        conn.commit()
+        EventBus.publish(ReductionGoalChanged())
+        return changed
+    except sqlite3.Error as exc:
+        logger.error("Unable to update goal status: %s", exc)
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def archive_goal(goal_id: int) -> bool:
+    """Retire a goal without marking it as met."""
+    return update_goal_status(goal_id, "archived")
+
+
+def complete_goal(goal_id: int) -> bool:
+    """Mark a goal as successfully achieved."""
+    return update_goal_status(goal_id, "completed")
+
+
+def delete_reduction_goal(goal_id: int) -> bool:
+    """Permanently remove a goal row."""
+    init_goals_db()
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM reduction_goals WHERE id = ?", (goal_id,))
+        deleted = cursor.rowcount > 0
+        conn.commit()
+        EventBus.publish(ReductionGoalChanged())
+        return deleted
+    except sqlite3.Error as exc:
+        logger.error("Unable to delete reduction goal: %s", exc)
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def init_waste_db() -> bool:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS waste_assessments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                food_scraps REAL DEFAULT 0,
+                plastic_packaging REAL DEFAULT 0,
+                paper_cardboard REAL DEFAULT 0,
+                glass REAL DEFAULT 0,
+                metal_cans REAL DEFAULT 0,
+                e_waste REAL DEFAULT 0,
+                textiles REAL DEFAULT 0,
+                mixed_waste REAL DEFAULT 0,
+                total_weekly_kg REAL DEFAULT 0,
+                annual_co2 REAL DEFAULT 0,
+                recyclable_pct REAL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+        return True
+    except sqlite3.Error as e:
+        logger.error("Waste DB init error: %s", e)
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def save_waste_assessment(user_id: int, waste_data: dict[str, float], total_weekly_kg: float, annual_co2: float, recyclable_pct: float) -> bool:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO waste_assessments (
+                user_id, food_scraps, plastic_packaging, paper_cardboard,
+                glass, metal_cans, e_waste, textiles, mixed_waste,
+                total_weekly_kg, annual_co2, recyclable_pct
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            user_id,
+            waste_data.get("Food Scraps", 0),
+            waste_data.get("Plastic Packaging", 0),
+            waste_data.get("Paper & Cardboard", 0),
+            waste_data.get("Glass", 0),
+            waste_data.get("Metal (Cans)", 0),
+            waste_data.get("Electronics (E-Waste)", 0),
+            waste_data.get("Textiles", 0),
+            waste_data.get("Other (Mixed Waste)", 0),
+            total_weekly_kg, annual_co2, recyclable_pct,
+        ))
+        conn.commit()
+        get_waste_assessments.clear()
+        return True
+    except sqlite3.Error as e:
+        logger.error("Waste assessment save error: %s", e)
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+@cached(category=CACHE_CATEGORY_DB_READS, ttl=TTL_DB_READ)
+def get_waste_assessments(user_id: int) -> list[dict[str, Any]]:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM waste_assessments WHERE user_id = ? ORDER BY created_at DESC", (user_id,))
+        columns = [column[0] for column in cursor.description]
+        data = cursor.fetchall()
+        return [dict(zip(columns, row)) for row in data]
+    except sqlite3.Error as e:
+        logger.error("Waste assessment read error: %s", e)
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Unit and currency preferences
+# ---------------------------------------------------------------------------
+
+def init_unit_preferences() -> bool:
+    """
+    Add the unit_system and currency columns to the users table.
+
+    Uses the same defensive ALTER-and-swallow pattern already used for
+    anonymous_leaderboard in init_db(), so it is safe to call repeatedly and on
+    a database that already has the columns.
+    """
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        for statement in (
+            "ALTER TABLE users ADD COLUMN unit_system TEXT DEFAULT 'metric'",
+            "ALTER TABLE users ADD COLUMN currency TEXT DEFAULT 'USD'",
+        ):
+            try:
+                cursor.execute(statement)
+            except sqlite3.OperationalError:
+                pass
+        conn.commit()
+        return True
+    except sqlite3.Error as exc:
+        logger.error("Unit preference init error: %s", exc)
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def save_unit_preference(user_id: int, unit_system: str, currency: str) -> bool:
+    """
+    Persist a user's display preference.
+
+    The value is normalised through src.utils.units.make_preference() first, so an
+    unknown system or currency is stored as the default rather than as
+    something no page can render.
+    """
+    from src.utils.units import make_preference
+
+    preference = make_preference(unit_system, currency)
+    init_unit_preferences()
+
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE users SET unit_system = ?, currency = ? WHERE id = ?",
+            (preference["system"], preference["currency"], user_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    except sqlite3.Error as exc:
+        logger.error("Unable to save unit preference: %s", exc)
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_unit_preference(user_id: int) -> dict[str, Any]:
+    """
+    Return a user's display preference, defaulting to metric + USD.
+
+    Never raises and never returns None: every page reads this on load, so a
+    missing user, a missing column or a corrupted value must all degrade to the
+    default rather than break the page.
+    """
+    from src.utils.units import make_preference
+
+    init_unit_preferences()
+
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT unit_system, currency FROM users WHERE id = ?", (user_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return make_preference()
+        return make_preference(row[0], row[1])
+    except sqlite3.Error as exc:
+        logger.error("Unable to read unit preference: %s", exc)
+        return make_preference()
+    finally:
+        if conn:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Community Polls
+# ---------------------------------------------------------------------------
+
+def init_community_polls_db() -> bool:
+    """Initialize database tables for community polls."""
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS community_polls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                question TEXT NOT NULL,
+                category TEXT DEFAULT 'General',
+                status TEXT DEFAULT 'active',
+                created_by TEXT DEFAULT 'Community',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS poll_options (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                poll_id INTEGER NOT NULL,
+                option_text TEXT NOT NULL,
+                vote_count INTEGER DEFAULT 0,
+                FOREIGN KEY (poll_id) REFERENCES community_polls (id) ON DELETE CASCADE
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS poll_votes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                poll_id INTEGER NOT NULL,
+                user_identifier TEXT NOT NULL,
+                option_id INTEGER NOT NULL,
+                voted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(poll_id, user_identifier),
+                FOREIGN KEY (poll_id) REFERENCES community_polls (id) ON DELETE CASCADE,
+                FOREIGN KEY (option_id) REFERENCES poll_options (id) ON DELETE CASCADE
+            )
+        """)
+        conn.commit()
+        return True
+    except sqlite3.Error as e:
+        logger.error("Community polls DB init error: %s", e)
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def seed_community_polls() -> None:
+    """Seed sample sustainability community polls if table is empty."""
+    init_community_polls_db()
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM community_polls")
+        if cursor.fetchone()[0] > 0:
+            return
+
+        sample_polls = [
+            (
+                "What is your primary action for reducing personal carbon footprint in 2026?",
+                "Lifestyle",
+                "active",
+                "EcoBuddy Team",
+                [
+                    ("Switching to plant-based diet", 45),
+                    ("Using public transport & biking", 38),
+                    ("Installing solar panels / renewable energy", 29),
+                    ("Reducing single-use plastic & waste", 52),
+                ],
+            ),
+            (
+                "Which sector needs the most aggressive climate policy enforcement?",
+                "Policy",
+                "active",
+                "EcoBuddy Team",
+                [
+                    ("Energy & Electricity Generation", 60),
+                    ("Industrial Manufacturing & Heavy Industry", 42),
+                    ("Transportation & Logistics", 31),
+                    ("Agriculture & Deforestation", 25),
+                ],
+            ),
+            (
+                "What was the most impactful eco-habit you adopted last year?",
+                "Community",
+                "archived",
+                "Community",
+                [
+                    ("Composting organic waste", 85),
+                    ("Eliminating fast fashion purchases", 64),
+                    ("Switching to EV / E-bike", 40),
+                    ("Smart home energy management", 53),
+                ],
+            ),
+        ]
+
+        for question, category, status, created_by, options in sample_polls:
+            cursor.execute("""
+                INSERT INTO community_polls (question, category, status, created_by)
+                VALUES (?, ?, ?, ?)
+            """, (question, category, status, created_by))
+            poll_id = cursor.lastrowid
+            for opt_text, count in options:
+                cursor.execute("""
+                    INSERT INTO poll_options (poll_id, option_text, vote_count)
+                    VALUES (?, ?, ?)
+                """, (poll_id, opt_text, count))
+
+        conn.commit()
+    except sqlite3.Error as e:
+        logger.error("Failed to seed community polls: %s", e)
+    finally:
+        if conn:
+            conn.close()
+
+
+def create_poll(question: str, options: list[str], category: str = "General", created_by: str = "Community") -> int | None:
+    """Create a new poll with given options."""
+    if not question.strip() or len(options) < 2:
+        return None
+    init_community_polls_db()
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO community_polls (question, category, status, created_by)
+            VALUES (?, ?, 'active', ?)
+        """, (question.strip(), category, created_by))
+        poll_id = cursor.lastrowid
+        for opt in options:
+            if opt.strip():
+                cursor.execute("""
+                    INSERT INTO poll_options (poll_id, option_text, vote_count)
+                    VALUES (?, ?, 0)
+                """, (poll_id, opt.strip()))
+        conn.commit()
+        get_active_polls.clear()
+        get_archived_polls.clear()
+        return poll_id
+    except sqlite3.Error as e:
+        logger.error("Failed to create poll: %s", e)
+        return None
+    finally:
+        if conn:
+            conn.close()
+
+
+@cached(category=CACHE_CATEGORY_DB_READS, ttl=TTL_DB_READ)
+def get_active_polls() -> list[dict]:
+    """Retrieve all active community polls with their options and vote counts."""
+    seed_community_polls()
+    return _fetch_polls_by_status("active")
+
+
+@cached(category=CACHE_CATEGORY_DB_READS, ttl=TTL_DB_READ)
+def get_archived_polls() -> list[dict]:
+    """Retrieve all archived community polls with final results."""
+    seed_community_polls()
+    return _fetch_polls_by_status("archived")
+
+
+def _fetch_polls_by_status(status: str) -> list[dict]:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, question, category, status, created_by, created_at
+            FROM community_polls
+            WHERE status = ?
+            ORDER BY created_at DESC
+        """, (status,))
+        poll_rows = cursor.fetchall()
+        polls = []
+        for p in poll_rows:
+            poll_id = p[0]
+            cursor.execute("""
+                SELECT id, option_text, vote_count
+                FROM poll_options
+                WHERE poll_id = ?
+                ORDER BY id ASC
+            """, (poll_id,))
+            option_rows = cursor.fetchall()
+            options = [
+                {"id": opt[0], "option_text": opt[1], "vote_count": opt[2]}
+                for opt in option_rows
+            ]
+            total_votes = sum(opt["vote_count"] for opt in options)
+            polls.append({
+                "id": poll_id,
+                "question": p[1],
+                "category": p[2],
+                "status": p[3],
+                "created_by": p[4],
+                "created_at": p[5],
+                "options": options,
+                "total_votes": total_votes,
+            })
+        return polls
+    except sqlite3.Error as e:
+        logger.error("Failed to fetch polls: %s", e)
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+def has_user_voted(poll_id: int, user_identifier: str) -> bool:
+    """Check if a specific user/identifier has already voted on a poll."""
+    init_community_polls_db()
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT 1 FROM poll_votes WHERE poll_id = ? AND user_identifier = ?
+        """, (poll_id, str(user_identifier)))
+        return cursor.fetchone() is not None
+    except sqlite3.Error as e:
+        logger.error("Error checking poll vote: %s", e)
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def vote_poll(poll_id: int, option_id: int, user_identifier: str) -> bool:
+    """Record an anonymous vote for an option in a poll."""
+    init_community_polls_db()
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+
+        # Check if already voted
+        cursor.execute("""
+            SELECT 1 FROM poll_votes WHERE poll_id = ? AND user_identifier = ?
+        """, (poll_id, str(user_identifier)))
+        if cursor.fetchone():
+            return False
+
+        cursor.execute("""
+            INSERT INTO poll_votes (poll_id, user_identifier, option_id)
+            VALUES (?, ?, ?)
+        """, (poll_id, str(user_identifier), option_id))
+
+        cursor.execute("""
+            UPDATE poll_options SET vote_count = vote_count + 1 WHERE id = ? AND poll_id = ?
+        """, (option_id, poll_id))
+
+        conn.commit()
+        get_active_polls.clear()
+        get_archived_polls.clear()
+        return True
+    except sqlite3.Error as e:
+        logger.error("Failed to record vote: %s", e)
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def archive_poll(poll_id: int) -> bool:
+    """Archive a poll by ID."""
+    init_community_polls_db()
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE community_polls SET status = 'archived' WHERE id = ?", (poll_id,))
+        changed = cursor.rowcount > 0
+        conn.commit()
+        get_active_polls.clear()
+        get_archived_polls.clear()
+        return changed
+    except sqlite3.Error as e:
+        logger.error("Failed to archive poll: %s", e)
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+def create_time_capsule(user_id: int, title: str, promise_text: str, category: str, unlock_date: str) -> bool:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO time_capsules (user_id, title, promise_text, category, unlock_date)
+            VALUES (?, ?, ?, ?, ?)
+        """, (user_id, title, promise_text, category, unlock_date))
+        conn.commit()
+        EventBus.publish(TimeCapsuleChanged())
+        return True
+    except sqlite3.Error as e:
+        logger.error("create_time_capsule error: %s", e)
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+@cached(category=CACHE_CATEGORY_DB_READS, ttl=TTL_DB_READ)
+def get_time_capsules(user_id: int) -> list[dict[str, Any]]:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, user_id, title, promise_text, category,
+                   unlock_date, is_unlocked, unlocked_at, progress_notes,
+                   created_at, updated_at
+            FROM time_capsules
+            WHERE user_id = ?
+            ORDER BY unlock_date ASC, created_at DESC
+        """, (user_id,))
+        columns = [column[0] for column in cursor.description]
+        data = cursor.fetchall()
+        return [dict(zip(columns, row)) for row in data]
+    except sqlite3.Error:
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+def update_time_capsule_unlock(capsule_id: int) -> bool:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE time_capsules
+            SET is_unlocked = 1, unlocked_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND is_unlocked = 0
+        """, (capsule_id,))
+        conn.commit()
+        EventBus.publish(TimeCapsuleChanged())
+        return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logger.error("update_time_capsule_unlock error: %s", e)
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def update_time_capsule_progress(capsule_id: int, progress_notes: str) -> bool:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE time_capsules
+            SET progress_notes = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (progress_notes, capsule_id))
+        conn.commit()
+        EventBus.publish(TimeCapsuleChanged())
+        return True
+    except sqlite3.Error as e:
+        logger.error("update_time_capsule_progress error: %s", e)
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def delete_time_capsule(capsule_id: int) -> bool:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM time_capsules WHERE id = ?", (capsule_id,))
+        conn.commit()
+        EventBus.publish(TimeCapsuleChanged())
+        return True
+    except sqlite3.Error as e:
+        logger.error("delete_time_capsule error: %s", e)
+        return False
+    finally:
+        if conn:
+            conn.close()
+def save_weekly_challenge(user_id: int, title: str, difficulty: str, xp: int, category: str) -> bool:
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        INSERT INTO weekly_challenges
+        (user_id,title,difficulty,xp,category)
+        VALUES(?,?,?,?,?)
+    """,(user_id,title,difficulty,xp,category))
+
+    conn.commit()
+    conn.close()
+
+    return True
+def get_weekly_challenges(user_id: int) -> list[tuple[Any, ...]]:
+
+    conn=sqlite3.connect(DB_NAME)
+    cursor=conn.cursor()
+
+    cursor.execute("""
+    SELECT *
+    FROM weekly_challenges
+    WHERE user_id=?
+    ORDER BY created_at DESC
+    """,(user_id,))
+
+    data=cursor.fetchall()
+
+    conn.close()
+
+    return data
+def complete_weekly_challenge(challenge_id: int) -> bool:
+
+    conn=sqlite3.connect(DB_NAME)
+    cursor=conn.cursor()
+
+    cursor.execute("""
+    UPDATE weekly_challenges
+    SET status='Completed'
+    WHERE id=?
+    """,(challenge_id,))
+
+    conn.commit()
+
+    conn.close()
+
+
+
+from datetime import datetime, timedelta
+
+def weekly_challenges_exist(user_id: int) -> bool:
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    last_week = datetime.now() - timedelta(days=7)
+
+    cursor.execute("""
+        SELECT COUNT(*)
+        FROM weekly_challenges
+        WHERE user_id = ?
+        AND created_at >= ?
+    """, (user_id, last_week))
+
+    count = cursor.fetchone()[0]
+
+    conn.close()
+
+    return count > 0
+
+
+def get_completed_challenges(user_id: int) -> list[tuple[Any, ...]]:
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT title,difficulty,created_at
+        FROM weekly_challenges
+        WHERE user_id=?
+        AND status='Completed'
+        ORDER BY created_at DESC
+    """,(user_id,))
+
+    data = cursor.fetchall()
+
+    conn.close()
+
+    return data
+
+
+# ============================================================================
+# OPTIMIZED DATABASE QUERIES - Issue #778
+_db_optimizer = None
+
+
+def get_db_optimizer() -> Any:
+    """Get the database optimizer instance."""
+    global _db_optimizer
+    if _db_optimizer is None:
+        try:
+            from src.lib.db_optimizer import get_query_optimizer
+            _db_optimizer = get_query_optimizer()
+        except Exception:
+            _db_optimizer = None
+    return _db_optimizer
+
+def save_food_scan(user_id: int, meal_name: str, food_items: dict, total_co2: float) -> bool:
+    import json
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO food_scans (user_id, meal_name, items, total_co2_kg) VALUES (?, ?, ?, ?)",
+            (user_id, meal_name, json.dumps(food_items), total_co2)
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except sqlite3.Error as e:
+        logger.error(f"Error saving food scan: {e}")
+        return False
+
+def get_food_scans(user_id: int) -> list[dict]:
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM food_scans WHERE user_id = ?", (user_id,))
+        columns = [column[0] for column in cursor.description]
+        data = cursor.fetchall()
+        return [dict(zip(columns, row)) for row in data]
+    except sqlite3.Error:
+        return []
+    finally:
+        if conn:
+            conn.close()
+            conn.close()
+
+def get_db_optimizer() -> Any:
+    """Get the database optimizer instance."""
+    global _db_optimizer
+    if _db_optimizer is None:
+        _db_optimizer = get_query_optimizer()
+    return _db_optimizer
+
+def save_food_scan(user_id: int, meal_name: str, food_items: dict, total_co2: float) -> bool:
+    import json
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO food_scans (user_id, meal_name, items, total_co2_kg) VALUES (?, ?, ?, ?)",
+            (user_id, meal_name, json.dumps(food_items), total_co2)
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except sqlite3.Error as e:
+        logger.error(f"Error saving food scan: {e}")
+        return False
+
+def save_urban_health_profile(time_allocation: dict, weekly_park_visits: int, tree_canopy_pct: float, 
+                              exposure_data: dict, mitigation_data: dict) -> None:
+    """Saves an urban health impact analysis session to the src.core.database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO urban_health_profiles 
+        (time_allocation, weekly_park_visits, tree_canopy_pct, exposure_data, mitigation_data)
+        VALUES (?, ?, ?, ?, ?)
+    """, (
+        json.dumps(time_allocation),
+        weekly_park_visits,
+        tree_canopy_pct,
+        json.dumps(exposure_data),
+        json.dumps(mitigation_data)
+    ))
+    conn.commit()
+    conn.close()
+
+def get_food_scans(user_id: int) -> list[dict]:
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT created_at, meal_name, total_co2_kg FROM food_scans WHERE user_id = ? ORDER BY created_at DESC",
+            (user_id,)
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [{"created_at": row[0], "meal_name": row[1], "total_co2_kg": row[2]} for row in rows]
+    except sqlite3.Error as e:
+        logger.error(f"Error getting food scans: {e}")
+        return []
+
+def save_pcf_label(product_name: str, label_data: dict, transparency_data: dict) -> None:
+    """Saves a generated PCF label and transparency score to the src.core.database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO pcf_labels (product_name, label_data, transparency_data)
+        VALUES (?, ?, ?)
+    """, (product_name, json.dumps(label_data), json.dumps(transparency_data)))
+    conn.commit()
+    conn.close()
+
+def init_energy_tracker_db() -> bool:
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS energy_consumption (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                electricity_kwh REAL,
+                gas_kwh REAL,
+                record_date TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        conn.commit()
+        return True
+    except sqlite3.Error as exc:
+        logger.error("Database energy tracker init error: %s", exc)
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+def save_textile_comparison(garments: list, results: list) -> None:
+    """Saves a textile comparison session to the src.core.database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO textile_comparisons (garment_data, results_data)
+        VALUES (?, ?)
+    """, (json.dumps(garments), json.dumps(results)))
+    conn.commit()
+    conn.close()
+
+def add_energy_record(user_id: int, electricity_kwh: float, gas_kwh: float, record_date: str) -> bool:
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO energy_consumption (user_id, electricity_kwh, gas_kwh, record_date)
+            VALUES (?, ?, ?, ?)
+        ''', (user_id, electricity_kwh, gas_kwh, record_date))
+        conn.commit()
+        return True
+    except sqlite3.Error as exc:
+        logger.error("Database energy tracker insert error: %s", exc)
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+def add_pantry_item(item_name: str, purchase_date: str, storage_condition: str) -> None:
+    """Adds a new item to the pantry inventory."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO pantry_inventory (item_name, purchase_date, storage_condition)
+        VALUES (?, ?, ?)
+    """, (item_name, purchase_date, storage_condition))
+    conn.commit()
+    conn.close()
+
+def get_pantry_inventory() -> list:
+    """Retrieves all items in the pantry inventory."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT item_name, purchase_date, storage_condition FROM pantry_inventory ORDER BY purchase_date ASC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"name": row[0], "purchase_date": row[1], "storage": row[2]} for row in rows]
+
+def save_green_finance_profile(portfolio_value: float, deposit_amount: float, 
+                               investment_results: dict, banking_results: dict) -> None:
+    """Saves a green finance analysis profile to the src.core.database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO green_finance_profiles (portfolio_value, deposit_amount, investment_results, banking_results)
+        VALUES (?, ?, ?, ?)
+    """, (portfolio_value, deposit_amount, json.dumps(investment_results), json.dumps(banking_results)))
+    conn.commit()
+    conn.close()
+
+def get_green_finance_history() -> list:
+    """Retrieves historical green finance analysis profiles."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT portfolio_value, deposit_amount, investment_results, banking_results, timestamp FROM green_finance_profiles ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+def remove_pantry_item(item_name: str) -> None:
+    """Removes an item from the pantry inventory."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM pantry_inventory WHERE item_name = ?", (item_name,))
+    conn.commit()
+    conn.close()
+
+def get_energy_records(user_id: int) -> list[dict]:
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id, electricity_kwh, gas_kwh, record_date, created_at
+            FROM energy_consumption
+            WHERE user_id = ?
+            ORDER BY record_date ASC
+        ''', (user_id,))
+        rows = cursor.fetchall()
+        return [{"id": row[0], "electricity_kwh": row[1], "gas_kwh": row[2], "record_date": row[3], "created_at": row[4]} for row in rows]
+    except sqlite3.Error as exc:
+        logger.error("Database energy tracker select error: %s", exc)
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+def save_water_energy_profile(household_size: int, grid_intensity: float, comparison_data: dict) -> None:
+    """Saves a water-energy nexus comparison profile to the src.core.database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO water_energy_profiles (household_size, grid_intensity, comparison_data)
+        VALUES (?, ?, ?)
+    """, (household_size, grid_intensity, json.dumps(comparison_data)))
+    conn.commit()
+    conn.close()
+
+def get_water_energy_history() -> list:
+    """Retrieves historical water-energy nexus profiles."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT household_size, grid_intensity, comparison_data, timestamp FROM water_energy_profiles ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+def get_pca_balance(user_id: str) -> float:
+    """Retrieves the PCA balance for a user."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT balance_kg FROM pca_balances WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else 500.0
+
+def save_travel_itinerary(legs: list, report: dict) -> None:
+    """Saves a travel itinerary and its optimization report to the src.core.database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO travel_itineraries (legs_data, optimization_report)
+        VALUES (?, ?)
+    """, (json.dumps(legs), json.dumps(report)))
+    conn.commit()
+    conn.close()
+
+def get_travel_itinerary_history() -> list:
+    """Retrieves historical travel itineraries."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT legs_data, optimization_report, timestamp FROM travel_itineraries ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+
+import json
+
+def save_urban_mining_inventory(device_list: list, result_data: dict) -> None:
+    """Saves an urban mining inventory calculation to the src.core.database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO urban_mining_inventories (device_list, total_devices, carbon_avoided_kg, mining_score)
+        VALUES (?, ?, ?, ?)
+    """, (
+        json.dumps(device_list),
+        result_data.get("total_devices", 0),
+        result_data.get("total_carbon_avoided_kg", 0.0),
+        result_data.get("urban_mining_score", 0)
+    ))
+    conn.commit()
+    conn.close()
+
+def get_urban_mining_history() -> list:
+    """Retrieves historical urban mining inventory calculations."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT device_list, total_devices, carbon_avoided_kg, mining_score, timestamp FROM urban_mining_inventories ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+
+def update_pca_balance(user_id: str, amount: float) -> None:
+    """Updates the PCA balance for a user."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO pca_balances (user_id, balance_kg, last_updated)
+        VALUES (?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(user_id) DO UPDATE SET balance_kg = excluded.balance_kg, last_updated = CURRENT_TIMESTAMP
+    """, (user_id, amount))
+    conn.commit()
+    conn.close()
+
+def submit_neighborhood_score(zip_code: str, eco_score: float, carbon_saved_kg: float) -> None:
+    """Submits an anonymous score to the neighborhood aggregation table."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO neighborhood_scores (zip_code, eco_score, carbon_saved_kg)
+        VALUES (?, ?, ?)
+    """, (zip_code, eco_score, carbon_saved_kg))
+    conn.commit()
+    conn.close()
+
+def get_neighborhood_leaderboard() -> list:
+    """Retrieves aggregated leaderboard data from the src.core.database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT 
+            zip_code,
+            COUNT(*) as total_participants,
+            ROUND(AVG(eco_score), 1) as average_eco_score,
+            ROUND(SUM(carbon_saved_kg), 2) as total_carbon_saved_kg
+        FROM neighborhood_scores
+        GROUP BY zip_code
+        ORDER BY average_eco_score DESC
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+def record_pca_trade(buyer_id: str, seller_id: str, amount_kg: float, price_per_tonne: float, trade_type: str) -> None:
+    """Records a PCA trade in the src.core.database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO pca_trades (buyer_id, seller_id, amount_kg, price_per_tonne, trade_type)
+        VALUES (?, ?, ?, ?, ?)
+    """, (buyer_id, seller_id, amount_kg, price_per_tonne, trade_type))
+    conn.commit()
+    conn.close()
+
+
+import json
+
+def save_digital_twin_scenario(current_footprint: float, target_goal: float, report_data: dict) -> None:
+    """Saves a digital twin forecasting scenario to the src.core.database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO digital_twin_forecasts (current_footprint, target_goal, scenarios_applied)
+        VALUES (?, ?, ?)
+    """, (current_footprint, target_goal, json.dumps(report_data.get("scenarios_applied", []))))
+    conn.commit()
+    conn.close()
+
+def get_digital_twin_history() -> list:
+    """Retrieves historical digital twin forecasts."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT current_footprint, target_goal, scenarios_applied, timestamp FROM digital_twin_forecasts ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+
+import json
+
+def save_offset_portfolio(user_id: str, summary: dict, risk_profile: dict) -> None:
+    """Saves a snapshot of the user's offset portfolio and risk profile."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO offset_portfolios (user_id, total_tonnes, total_cost, diversification_score, risk_rating)
+        VALUES (?, ?, ?, ?, ?)
+    """, (
+        user_id,
+        summary.get("total_tonnes", 0.0),
+        summary.get("total_cost", 0.0),
+        risk_profile.get("diversification_score", 0.0),
+        risk_profile.get("overall_risk_rating", "Unknown")
+    ))
+    conn.commit()
+    conn.close()
+
+def get_offset_portfolio_history(user_id: str) -> list:
+    """Retrieves the historical snapshots of a user's offset portfolio."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT total_tonnes, total_cost, diversification_score, risk_rating, timestamp 
+        FROM offset_portfolios 
+        WHERE user_id = ? 
+        ORDER BY timestamp DESC
+    """, (user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+def save_avoided_emissions_log(activity_type: str, quantity: float, avoided_kg: float) -> None:
+    """Saves a logged avoided emissions activity to the src.core.database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO avoided_emissions_logs (activity_type, quantity, avoided_kg)
+        VALUES (?, ?, ?)
+    """, (activity_type, quantity, avoided_kg))
+    conn.commit()
+    conn.close()
+
+def get_avoided_emissions_history() -> list:
+    """Retrieves historical avoided emissions logs."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT activity_type, quantity, avoided_kg, timestamp FROM avoided_emissions_logs ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+def save_challenge_result(scenario_id: str, outcome: str, final_carbon: float, final_cost: float) -> None:
+    """Saves a scenario challenge result to the src.core.database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO challenge_results (scenario_id, outcome, final_carbon, final_cost)
+        VALUES (?, ?, ?, ?)
+    """, (scenario_id, outcome, final_carbon, final_cost))
+    conn.commit()
+    conn.close()
+
+def get_challenge_history() -> list:
+    """Retrieves historical scenario challenge results."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT scenario_id, outcome, final_carbon, final_cost, timestamp FROM challenge_results ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+def save_equivalence_preferences(user_id: int, top_metrics: str, region: str) -> bool:
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            """
+            INSERT INTO equivalence_preferences (user_id, top_metrics, region, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id) DO UPDATE SET
+                top_metrics=excluded.top_metrics,
+                region=excluded.region,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (user_id, top_metrics, region)
+        )
+        
+        conn.commit()
+        conn.close()
+        return True
+    except sqlite3.Error as e:
+        logger.error(f"Database error saving equivalence preferences: {e}")
+        return False
+
+
+import json
+
+def save_green_premium_analysis(product_key: str, utility_inflation: float, subsidy_usd: float, result_data: dict) -> None:
+    """Saves a green premium ROI analysis to the src.core.database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO green_premium_analyses (product_key, utility_inflation, subsidy_usd, result_data)
+        VALUES (?, ?, ?, ?)
+    """, (product_key, utility_inflation, subsidy_usd, json.dumps(result_data)))
+    conn.commit()
+    conn.close()
+
+
+def get_equivalence_preferences(user_id: int) -> dict | None:
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "SELECT top_metrics, region FROM equivalence_preferences WHERE user_id = ?",
+            (user_id,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            return {"top_metrics": row[0], "region": row[1]}
+        return None
+    except sqlite3.Error as e:
+        logger.error(f"Database error getting equivalence preferences: {e}")
+        return None
+
+
+import json
+
+def save_relocation_analysis(current_city: str, target_city: str, result_data: dict) -> None:
+    """Saves a relocation impact analysis to the src.core.database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO relocation_analyses (current_city, target_city, annual_delta_kg_co2e, result_data)
+        VALUES (?, ?, ?, ?)
+    """, (current_city, target_city, result_data.get("annual_delta_kg_co2e", 0.0), json.dumps(result_data)))
+    conn.commit()
+    conn.close()
+
+def save_renovation_estimate(material_key: str, volume_m3: float, total_carbon_kg: float, low_carbon_score: float) -> None:
+    """Saves a renovation embodied carbon estimate to the database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO renovation_estimates (material_key, volume_m3, total_carbon_kg, low_carbon_score)
+        VALUES (?, ?, ?, ?)
+    """, (material_key, volume_m3, total_carbon_kg, low_carbon_score))
+    conn.commit()
+    conn.close()
+
+def get_renovation_history() -> list:
+    """Retrieves historical renovation carbon estimates."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT material_key, volume_m3, total_carbon_kg, low_carbon_score, timestamp FROM renovation_estimates ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+def get_relocation_history() -> list:
+    """Retrieves historical relocation analyses."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT current_city, target_city, annual_delta_kg_co2e, timestamp 
+        FROM relocation_analyses 
+        ORDER BY timestamp DESC
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+
+def get_virtual_city_state(user_id: int) -> dict:
+    """Retrieve the user's virtual city state."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT carbon_saved_kg, unlocked_assets, layout_state 
+        FROM virtual_city_state 
+        WHERE user_id = ?
+    """, (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    import json
+    if row:
+        return {
+            "user_id": user_id,
+            "carbon_saved_kg": row[0],
+            "unlocked_assets": json.loads(row[1]) if row[1] else [],
+            "layout_state": json.loads(row[2]) if row[2] else {}
+        }
+    else:
+        return {
+            "user_id": user_id,
+            "carbon_saved_kg": 0.0,
+            "unlocked_assets": [],
+            "layout_state": {}
+        }
+
+def save_virtual_city_state(user_id: int, carbon_saved_kg: float, unlocked_assets: list, layout_state: dict) -> None:
+    """Saves or updates the user's virtual city state."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    import json
+    
+    cursor.execute("SELECT user_id FROM virtual_city_state WHERE user_id = ?", (user_id,))
+    exists = cursor.fetchone()
+    
+    if exists:
+        cursor.execute("""
+            UPDATE virtual_city_state 
+            SET carbon_saved_kg = ?, unlocked_assets = ?, layout_state = ?, last_updated = CURRENT_TIMESTAMP
+            WHERE user_id = ?
+        """, (carbon_saved_kg, json.dumps(unlocked_assets), json.dumps(layout_state), user_id))
+    else:
+        cursor.execute("""
+            INSERT INTO virtual_city_state (user_id, carbon_saved_kg, unlocked_assets, layout_state)
+            VALUES (?, ?, ?, ?)
+        """, (user_id, carbon_saved_kg, json.dumps(unlocked_assets), json.dumps(layout_state)))
+    
+    conn.commit()
+    conn.close()
+
+def log_civic_action(user_id: int, bill_id: str, action_type: str) -> bool:
+    """Logs a civic action taken by a user."""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO civic_actions (user_id, bill_id, action_type, created_at)
+            VALUES (?, ?, ?, datetime('now'))
+        ''', (user_id, bill_id, action_type))
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Error logging civic action: {e}")
+        return False
+    finally:
+        if 'conn' in locals():
+            conn.close()
+
+def save_efficacy_checkin(user_id: str, anxiety_level: int, agency_level: int, action_taken: bool, efficacy_score: float) -> None:
+    """Saves a daily eco-efficacy check-in to the database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO efficacy_checkins (user_id, anxiety_level, agency_level, action_taken, efficacy_score)
+        VALUES (?, ?, ?, ?, ?)
+    """, (user_id, anxiety_level, agency_level, action_taken, efficacy_score))
+    conn.commit()
+    conn.close()
+
+def get_efficacy_history(user_id: str) -> list:
+    """Retrieves historical eco-efficacy check-ins for a user."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT anxiety_level, agency_level, action_taken, efficacy_score, timestamp 
+        FROM efficacy_checkins 
+        WHERE user_id = ? 
+        ORDER BY timestamp ASC
+    """, (user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+def get_user_civic_actions(user_id: int) -> list:
+    """Retrieves civic actions taken by a user."""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id, bill_id, action_type, created_at
+            FROM civic_actions
+            WHERE user_id = ?
+            ORDER BY created_at DESC
+        ''', (user_id,))
+        rows = cursor.fetchall()
+        return [{"id": r[0], "bill_id": r[1], "action_type": r[2], "created_at": r[3]} for r in rows]
+    except Exception as e:
+        logger.error(f"Error retrieving civic actions: {e}")
+        return []
+    finally:
+        if 'conn' in locals():
+            conn.close()
+
+import json
+
+def save_ej_impact_log(zip_code: str, activity: str, quantity: float, impact_data: dict) -> None:
+    """Saves an EJ impact analysis log to the src.core.database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO ej_impact_logs (zip_code, activity, quantity, impact_data)
+        VALUES (?, ?, ?, ?)
+    """, (zip_code, activity, quantity, json.dumps(impact_data)))
+    conn.commit()
+    conn.close()
+
+def get_ej_history() -> list:
+    """Retrieves historical EJ impact logs."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT zip_code, activity, quantity, impact_data, timestamp FROM ej_impact_logs ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+def init_travel_tracker_db() -> bool:
+    try:
+        import sqlite3
+        with sqlite3.connect(DB_NAME) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS travel_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    record_date TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    distance_km REAL NOT NULL,
+                    passengers INTEGER NOT NULL,
+                    emissions_kg REAL NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users (id)
+                )
+            """)
+            conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Error initializing travel_tracker_db: {e}")
+        return False
+
+import json
+
+def save_net_zero_roadmap(scope1: float, scope2: float, scope3: float, target_year: int, roadmap_data: dict) -> None:
+    """Saves a generated net-zero roadmap to the src.core.database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO net_zero_roadmaps (scope1, scope2, scope3, target_year, roadmap_data)
+        VALUES (?, ?, ?, ?, ?)
+    """, (scope1, scope2, scope3, target_year, json.dumps(roadmap_data)))
+    conn.commit()
+    conn.close()
+
+def get_roadmap_history() -> list:
+    """Retrieves historical net-zero roadmap generations."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT scope1, scope2, scope3, target_year, roadmap_data, timestamp FROM net_zero_roadmaps ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+def save_appliance_registration(user_id: str, appliance_type: str, age_years: int, annual_usage_kwh: float, result_data: dict) -> None:
+    """Saves an appliance lifecycle analysis to the database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO appliance_registrations (user_id, appliance_type, age_years, annual_usage_kwh, circularity_score)
+        VALUES (?, ?, ?, ?, ?)
+    """, (user_id, appliance_type, age_years, annual_usage_kwh, result_data.get("circularity_score", 0.0)))
+    conn.commit()
+    conn.close()
+
+def get_appliance_history(user_id: str) -> list:
+    """Retrieves historical appliance registrations for a user."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT appliance_type, age_years, annual_usage_kwh, circularity_score, timestamp 
+        FROM appliance_registrations 
+        WHERE user_id = ? 
+        ORDER BY timestamp DESC
+    """, (user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+def add_travel_record(user_id: int, record_date: str, mode: str, distance_km: float, passengers: int, emissions_kg: float) -> bool:
+    try:
+        import sqlite3
+        with sqlite3.connect(DB_NAME) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO travel_records (user_id, record_date, mode, distance_km, passengers, emissions_kg)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (user_id, record_date, mode, distance_km, passengers, emissions_kg))
+            conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Error adding travel_record: {e}")
+        return False
+
+
+def save_grocery_optimization(budget_usd: float, categories: list, result_data: dict) -> None:
+    """Saves a grocery optimization session to the src.core.database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO grocery_optimizations (budget_usd, categories, result_data)
+        VALUES (?, ?, ?)
+    """, (budget_usd, json.dumps(categories), json.dumps(result_data)))
+    conn.commit()
+    conn.close()
+
+def get_grocery_history() -> list:
+    """Retrieves historical grocery optimization sessions."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT budget_usd, categories, result_data, timestamp FROM grocery_optimizations ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+def save_skill_listing(user_id: str, skill_name: str, category: str, difficulty: str, karma_cost: int) -> None:
+    """Saves a new skill listing to the database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO skill_listings (user_id, skill_name, category, difficulty, karma_cost)
+        VALUES (?, ?, ?, ?, ?)
+    """, (user_id, skill_name, category, difficulty, karma_cost))
+    conn.commit()
+    conn.close()
+
+def execute_skill_swap_db(learner_id: str, teacher_id: str, skill_name: str, karma_transferred: int) -> None:
+    """Records a completed skill swap in the database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO skill_swaps (learner_id, teacher_id, skill_name, karma_transferred)
+        VALUES (?, ?, ?, ?)
+    """, (learner_id, teacher_id, skill_name, karma_transferred))
+    conn.commit()
+    conn.close()
+
+def get_travel_records(user_id: int) -> list:
+    try:
+        import sqlite3
+        with sqlite3.connect(DB_NAME) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM travel_records WHERE user_id = ? ORDER BY record_date DESC
+            """, (user_id,))
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"Error getting travel_records: {e}")
+        return []
+
+def save_carbon_banking_action(user_id: str, action_type: str, amount: float, from_month: str, to_month: str) -> None:
+    """Saves a carbon banking action (rollover or borrow) to the src.core.database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO carbon_banking_actions (user_id, action_type, amount, from_month, to_month)
+        VALUES (?, ?, ?, ?, ?)
+    """, (user_id, action_type, amount, from_month, to_month))
+    conn.commit()
+    conn.close()
+
+def save_commute_log(user_id: str, log_date: str, distance_km: float, chosen_mode: str, baseline_mode: str, carbon_saved_kg: float) -> None:
+    """Saves a daily commute log to the database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO commute_logs (user_id, log_date, distance_km, chosen_mode, baseline_mode, carbon_saved_kg)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (user_id, log_date, distance_km, chosen_mode, baseline_mode, carbon_saved_kg))
+    conn.commit()
+    conn.close()
+
+def save_regeneration_log(garden_area_sqm: float, crop_count: int, regeneration_score: float) -> None:
+    """Saves a backyard regeneration impact log to the database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO regeneration_logs (garden_area_sqm, crop_count, regeneration_score)
+        VALUES (?, ?, ?)
+    """, (garden_area_sqm, crop_count, regeneration_score))
+    conn.commit()
+    conn.close()
+
+def get_regeneration_history() -> list:
+    """Retrieves historical backyard regeneration logs."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT garden_area_sqm, crop_count, regeneration_score, timestamp FROM regeneration_logs ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+def save_urban_cooling_plan(baseline_temp: float, hvac_cost: float, cooling_effect_c: float, twenty_year_net_savings: float) -> None:
+    """Saves an urban cooling mitigation plan to the database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO urban_cooling_plans (baseline_temp, hvac_cost, cooling_effect_c, twenty_year_net_savings)
+        VALUES (?, ?, ?, ?)
+    """, (baseline_temp, hvac_cost, cooling_effect_c, twenty_year_net_savings))
+    conn.commit()
+    conn.close()
+
+def get_urban_cooling_history() -> list:
+    """Retrieves historical urban cooling mitigation plans."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT baseline_temp, hvac_cost, cooling_effect_c, twenty_year_net_savings, timestamp FROM urban_cooling_plans ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+def get_commute_history(user_id: str) -> list:
+    """Retrieves historical commute logs for a user."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT log_date, distance_km, chosen_mode, baseline_mode, carbon_saved_kg, timestamp 
+        FROM commute_logs 
+        WHERE user_id = ? 
+        ORDER BY log_date DESC
+    """, (user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+def get_carbon_banking_history(user_id: str) -> list:
+    """Retrieves the carbon banking history for a specific user."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT action_type, amount, from_month, to_month, timestamp 
+        FROM carbon_banking_actions 
+        WHERE user_id = ? 
+        ORDER BY timestamp DESC
+    """, (user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+def save_policy_simulation(footprint_tonnes: float, tax_rate: float, net_impact_usd: float) -> None:
+    """Saves a carbon policy simulation result to the database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO policy_simulations (footprint_tonnes, tax_rate, net_impact_usd)
+        VALUES (?, ?, ?)
+    """, (footprint_tonnes, tax_rate, net_impact_usd))
+    conn.commit()
+    conn.close()
+
+def get_policy_history() -> list:
+    """Retrieves historical carbon policy simulations."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT footprint_tonnes, tax_rate, net_impact_usd, timestamp FROM policy_simulations ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+import json
+
+def save_load_shifting_plan(appliances: list, preference: str, carbon_saved_kg: float, money_saved_usd: float) -> None:
+    """Saves a load shifting optimization plan to the database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO load_shifting_plans (appliances, preference, carbon_saved_kg, money_saved_usd)
+        VALUES (?, ?, ?, ?)
+    """, (json.dumps(appliances), preference, carbon_saved_kg, money_saved_usd))
+    conn.commit()
+    conn.close()
+
+def get_load_shifting_history() -> list:
+    """Retrieves historical load shifting plans."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT appliances, preference, carbon_saved_kg, money_saved_usd, timestamp FROM load_shifting_plans ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+import json
+
+def get_assessments_for_anomaly_detection(user_id: str) -> list:
+    """Retrieves historical assessment data formatted for anomaly detection."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    # Assuming a standard 'assessments' table exists with date and total_carbon columns
+    cursor.execute("""
+        SELECT strftime('%Y-%m', timestamp) as date, SUM(total_carbon) as carbon_kg
+        FROM assessments
+        WHERE user_id = ?
+        GROUP BY strftime('%Y-%m', timestamp)
+        ORDER BY date ASC
+    """, (user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"date": row[0], "carbon_kg": row[1]} for row in rows if row[1] is not None]
+
+def save_aviation_plan(distance_km: float, cabin_class: str, has_layover: bool, total_emissions_kg: float) -> None:
+    """Saves an aviation flight plan analysis to the database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO aviation_plans (distance_km, cabin_class, has_layover, total_emissions_kg)
+        VALUES (?, ?, ?, ?)
+    """, (distance_km, cabin_class, has_layover, total_emissions_kg))
+    conn.commit()
+    conn.close()
+
+def get_aviation_history() -> list:
+    """Retrieves historical aviation plan analyses."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT distance_km, cabin_class, has_layover, total_emissions_kg, timestamp FROM aviation_plans ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+def save_alert_resolution(user_id: str, alert_date: str, carbon_kg: float) -> None:
+    """Logs the resolution of a carbon anomaly alert."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO anomaly_alerts (user_id, alert_date, carbon_kg, severity, resolved)
+        VALUES (?, ?, ?, 'medium', 1)
+    """, (user_id, alert_date, carbon_kg))
+    conn.commit()
+    conn.close()
+
+def save_biodiversity_project(baseline_condition: str, total_area_sqm: float, bng_percentage: float, total_bu_gained: float) -> None:
+    """Saves a biodiversity net gain project assessment to the database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO biodiversity_projects (baseline_condition, total_area_sqm, bng_percentage, total_bu_gained)
+        VALUES (?, ?, ?, ?)
+    """, (baseline_condition, total_area_sqm, bng_percentage, total_bu_gained))
+    conn.commit()
+    conn.close()
+
+def get_biodiversity_history() -> list:
+    """Retrieves historical biodiversity project assessments."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT baseline_condition, total_area_sqm, bng_percentage, total_bu_gained, timestamp FROM biodiversity_projects ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+def save_event_plan(guest_count: int, catering_type: str, total_emissions_kg: float) -> None:
+    """Saves an event footprint calculation to the database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO event_plans (guest_count, catering_type, total_emissions_kg)
+        VALUES (?, ?, ?)
+    """, (guest_count, catering_type, total_emissions_kg))
+    conn.commit()
+    conn.close()
+
+def save_p2p_simulation(grid_price: float, p2p_price: float, total_volume_kwh: float, carbon_avoided_kg: float) -> None:
+    """Saves a P2P energy simulation result to the database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO p2p_simulations (grid_price, p2p_price, total_volume_kwh, carbon_avoided_kg)
+        VALUES (?, ?, ?, ?)
+    """, (grid_price, p2p_price, total_volume_kwh, carbon_avoided_kg))
+    conn.commit()
+    conn.close()
+
+def save_portfolio_analysis(total_invested: float, total_emissions: float, alignment_score: float) -> None:
+    """Saves a sustainable portfolio analysis to the database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO portfolio_analyses (total_invested, total_emissions, alignment_score)
+        VALUES (?, ?, ?)
+    """, (total_invested, total_emissions, alignment_score))
+    conn.commit()
+    conn.close()
+
+def get_portfolio_history() -> list:
+    """Retrieves historical portfolio analyses."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT total_invested, total_emissions, alignment_score, timestamp FROM portfolio_analyses ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+def get_p2p_history() -> list:
+    """Retrieves historical P2P energy simulations."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT grid_price, p2p_price, total_volume_kwh, carbon_avoided_kg, timestamp FROM p2p_simulations ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+def get_event_history() -> list:
+    """Retrieves historical event plans."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT guest_count, catering_type, total_emissions_kg, timestamp FROM event_plans ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+def save_repair_log(product_key: str, replaced_part: str, status: str, carbon_saved_kg: float) -> None:
+    """Saves a product repair log to the database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO repair_logs (product_key, replaced_part, status, carbon_saved_kg)
+        VALUES (?, ?, ?, ?)
+    """, (product_key, replaced_part, status, carbon_saved_kg))
+    conn.commit()
+    conn.close()
+
+def get_repair_history() -> list:
+    """Retrieves historical product repair logs."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT product_key, replaced_part, status, carbon_saved_kg, timestamp FROM repair_logs ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+def save_virtual_water_log(product: str, quantity: float, region: str, scarcity_weighted_l: float) -> None:
+    """Saves a virtual water footprint log to the database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO virtual_water_logs (product, quantity, region, scarcity_weighted_l)
+        VALUES (?, ?, ?, ?)
+    """, (product, quantity, region, scarcity_weighted_l))
+    conn.commit()
+    conn.close()
+
+def save_resilience_plan(region: str, housing_type: str, base_resilience_score: float) -> None:
+    """Saves a climate resilience assessment to the database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO resilience_plans (region, housing_type, base_resilience_score)
+        VALUES (?, ?, ?)
+    """, (region, housing_type, base_resilience_score))
+    conn.commit()
+    conn.close()
+
+def get_resilience_history() -> list:
+    """Retrieves historical climate resilience assessments."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT region, housing_type, base_resilience_score, timestamp FROM resilience_plans ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+def get_virtual_water_history() -> list:
+    """Retrieves historical virtual water logs."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT product, quantity, region, scarcity_weighted_l, timestamp FROM virtual_water_logs ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
