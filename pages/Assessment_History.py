@@ -3,9 +3,9 @@
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta
-from database import get_assessments
-from assessment_history_utils import filter_assessments
-from session_state_utils import ensure_session_state
+from src.core.database import get_assessments
+from src.utils.assessment_history_utils import filter_assessments
+from src.core.session_state_utils import ensure_session_state
 from styles.theme import apply_theme
 
 # --- Authentication & Setup ---
@@ -145,6 +145,88 @@ else:
     st.info("Please select a complete date range (start and end date).")
 
 st.divider()
-from assessment_undo import render_assessment_undo_ui
+from src.utils.assessment_undo import render_assessment_undo_ui
 render_assessment_undo_ui(user_id=user_id)
 
+st.divider()
+st.subheader("✏️ Edit or Finalize an Assessment")
+st.caption(
+    "Locking (#1467): edits carry the revision you last loaded, so a "
+    "save is rejected instead of silently overwriting someone else's "
+    "change if the assessment moved on in the meantime."
+)
+
+from src.core.database import (
+    get_assessment_by_id,
+    update_assessment,
+    finalize_assessment,
+    reopen_finalized_assessment,
+)
+
+edit_id = st.number_input(
+    "Assessment ID", min_value=1, step=1, key="concurrency_edit_id"
+)
+
+if st.button("Load assessment"):
+    st.session_state["concurrency_loaded"] = get_assessment_by_id(int(edit_id), user_id)
+    st.session_state.pop("concurrency_conflict", None)
+
+loaded = st.session_state.get("concurrency_loaded")
+if loaded:
+    if loaded["is_finalized"]:
+        st.warning("This assessment is finalized and read-only.")
+        if st.button("Reopen for editing"):
+            result = reopen_finalized_assessment(loaded["id"], user_id, loaded["revision"])
+            if result["status"] == "ok":
+                st.success("Reopened. Reload it to edit.")
+                st.session_state.pop("concurrency_loaded", None)
+            elif result["status"] == "conflict":
+                st.session_state["concurrency_conflict"] = result["current"]
+            else:
+                st.error(f"Could not reopen: {result['status']}")
+    else:
+        new_footprint = st.number_input(
+            "Footprint (kg CO₂)", value=float(loaded["footprint"] or 0)
+        )
+        new_eco_score = st.number_input(
+            "Eco Score", value=int(loaded["eco_score"] or 0)
+        )
+
+        col_save, col_finalize = st.columns(2)
+        if col_save.button("Save changes"):
+            result = update_assessment(
+                loaded["id"],
+                user_id,
+                loaded["revision"],
+                {"footprint": new_footprint, "eco_score": new_eco_score},
+            )
+            if result["status"] == "ok":
+                st.success(f"Saved (now revision {result['revision']}).")
+                st.session_state.pop("concurrency_loaded", None)
+                st.session_state.pop("concurrency_conflict", None)
+            elif result["status"] in ("conflict", "finalized"):
+                st.session_state["concurrency_conflict"] = result["current"]
+            else:
+                st.error(f"Save failed: {result['status']}")
+
+        if col_finalize.button("Finalize"):
+            result = finalize_assessment(loaded["id"], user_id, loaded["revision"])
+            if result["status"] == "ok":
+                st.success("Finalized.")
+                st.session_state.pop("concurrency_loaded", None)
+            elif result["status"] in ("conflict", "finalized"):
+                st.session_state["concurrency_conflict"] = result["current"]
+            else:
+                st.error(f"Finalize failed: {result['status']}")
+
+conflict = st.session_state.get("concurrency_conflict")
+if conflict:
+    st.error(
+        "This assessment changed since you loaded it, so your change was "
+        "not applied. Here is the latest saved version:"
+    )
+    st.json(conflict)
+    if st.button("Load latest & try again"):
+        st.session_state["concurrency_loaded"] = conflict
+        st.session_state.pop("concurrency_conflict", None)
+        st.rerun()

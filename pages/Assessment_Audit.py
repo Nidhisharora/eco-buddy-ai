@@ -5,16 +5,15 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from assessment_explainability import (
+from src.utils.assessment_explainability import (
     METHODOLOGY_CHANGED,
     SOURCE_UNAVAILABLE,
     build_assessment_audit,
     compare_audit_traces,
     serialize_audit,
 )
-from database import get_assessments_with_factors
-from emissions import get_factor_version
-from styles.theme import apply_theme
+from src.core.database import get_assessments_with_factors, get_assessment_snapshot
+from src.carbon.emissions import get_factor_versionfrom styles.theme import apply_theme
 
 
 st.set_page_config(page_title="Assessment Audit", page_icon="🔎", layout="wide")
@@ -43,9 +42,9 @@ labels = {
 
 selected_id = st.selectbox("Assessment", options=[item["id"] for item in assessments], format_func=lambda value: labels[value])
 selected = next(item for item in assessments if item["id"] == selected_id)
+snapshot = get_assessment_snapshot(selected_id)
 
-try:
-    current_factor_version = get_factor_version("Global")
+try:    current_factor_version = get_factor_version("Global")
 except Exception:
     current_factor_version = None
 
@@ -59,14 +58,28 @@ for note in audit.notes:
     if note not in (METHODOLOGY_CHANGED,):
         st.caption(f"ℹ️ {note}")
 
+if snapshot:
+    st.success("✅ Using the immutable calculation snapshot stored with this assessment — no recalculation performed.")
+else:
+    st.caption("ℹ️ No stored snapshot for this assessment (it predates snapshotting); showing a reconstructed trace instead.")
+
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Stored footprint", f"{audit.stored_footprint:.2f} kg" if audit.stored_footprint is not None else "Unavailable")
-m2.metric("Reconstructed trace", f"{audit.trace.total_result:.2f} kg" if audit.methodology_available else "Unavailable")
+if snapshot:
+    m2.metric("Snapshot total", f"{snapshot['total_kg']:.2f} kg")
+else:
+    m2.metric("Reconstructed trace", f"{audit.trace.total_result:.2f} kg" if audit.methodology_available else "Unavailable")
 m3.metric("Eco score", str(audit.stored_eco_score) if audit.stored_eco_score is not None else "Unavailable")
 m4.metric("Factor version", audit.factor_version or "Unavailable")
 
-st.subheader("📊 Category Contributions")
-if audit.contributions:
+if snapshot and snapshot.get("uncertainty_percent"):
+    st.caption(
+        f"📊 **Uncertainty Range:** {snapshot['uncertainty_range']['low_kg']:.2f}–"
+        f"{snapshot['uncertainty_range']['high_kg']:.2f} kg CO₂ "
+        f"(±{snapshot['uncertainty_percent']:.0f}%)"
+    )
+
+st.subheader("📊 Category Contributions")if audit.contributions:
     contribution_df = pd.DataFrame([
         {"Category": c.category, "kg CO2e": c.result, "% of trace": c.percentage, "Rank": c.rank}
         for c in audit.contributions
@@ -75,7 +88,23 @@ if audit.contributions:
     st.dataframe(contribution_df, use_container_width=True, hide_index=True)
 else:
     st.warning("Category contributions cannot be reconstructed because the historical methodology is unavailable.")
-
+if snapshot and snapshot.get("category_bounds"):
+    st.subheader("🔍 Uncertainty by Category")
+    uncertainty_df = pd.DataFrame([
+        {
+            "Category": cat.title(),
+            "Central (kg)": bounds["central_kg"],
+            "Range (kg)": bounds["range_kg"],
+            "Low": bounds["low_kg"],
+            "High": bounds["high_kg"],
+        }
+        for cat, bounds in snapshot["category_bounds"].items()
+    ])
+    st.dataframe(uncertainty_df, use_container_width=True, hide_index=True)
+    st.caption(
+        "The 'Range' column shows the width of the uncertainty interval for each category. "
+        "Larger ranges indicate higher uncertainty in that input or factor set."
+    )
 st.subheader("🧾 Inputs Used")
 input_df = pd.DataFrame([
     {"Input": "Transport", "Value": audit.inputs.get("transport"), "Unit": "mode"},
@@ -112,7 +141,6 @@ else:
 st.subheader("🔬 Factor Metadata")
 metadata = audit.factor_metadata
 st.json(metadata)
-
 st.subheader("↔️ Previous vs Current")
 previous_candidates = [item for item in assessments if item["id"] != selected_id]
 if previous_candidates:

@@ -1,13 +1,5 @@
 import streamlit as st
 
-# -----------------------------------------------------------------------------
-# Clean Energy Explorer
-# -----------------------------------------------------------------------------
-# Educational feature for introducing users to renewable and cleaner energy
-# sources. Calculations/savings estimates are intentionally out of scope for
-# this first version.
-# -----------------------------------------------------------------------------
-
 st.set_page_config(
     page_title="Clean Energy Explorer | EcoBuddy",
     page_icon="🌱",
@@ -75,7 +67,7 @@ ENERGY_SOURCES = {
         ),
         "why_it_matters": (
             "When responsibly sourced, biomass can make productive use of "
-            "organic materials that might otherwise become waste."
+            "organic materials that might otherwise become src.environment.waste."
         ),
         "best_for": "Areas with sustainable organic-material resources",
         "highlights": [

@@ -1,320 +1,365 @@
 """
-Page: Community Eco Challenges
-================================
-A gamified social hub where users join eco challenges, form teams,
-log daily progress, compete on leaderboards, and earn XP rewards.
+pages/Community_Eco_Challenges.py
+----------------------------------
+Streamlit page: Community Eco Challenges.
+
+Join sustainability challenges, compete on leaderboards, track streaks,
+form teams, and earn achievement badges for eco-friendly actions.
 """
 
+import math
+from datetime import datetime, timedelta
+from typing import Any
+
+import pandas as pd
 import streamlit as st
-import json
-from datetime import datetime
 
-st.set_page_config(page_title="Community Eco Challenges", page_icon="🏆", layout="wide")
-
-# ── Module Imports ────────────────────────────────────────────────────────
-from community_challenge_service import (
-    list_active_challenges, get_challenge_overview, create_new_challenge,
-    participate_in_challenge, submit_progress, get_user_challenge_dashboard,
-    get_user_streak, get_category_distribution, get_difficulty_distribution,
-    get_weekly_progress_data, get_available_categories, get_difficulty_meta,
-)
-from community_challenge_cards import (
-    inject_card_css, render_challenge_card, render_leaderboard_entry,
-    render_feed_item, render_streak_display, render_stats_row,
-    render_challenge_create_form,
-)
-from community_challenge_charts import (
-    render_progress_line_chart, render_category_donut, render_difficulty_bar,
-    render_team_comparison_chart, render_progress_heatmap,
-    render_streak_calendar, render_completion_gauge,
+st.set_page_config(
+    page_title="Community Eco Challenges",
+    page_icon="🏆",
+    layout="wide",
 )
 
-# ── Init ──────────────────────────────────────────────────────────────────
-inject_card_css()
+# ---------------------------------------------------------------------------
+# Challenge categories
+# ---------------------------------------------------------------------------
 
-# Get user_id from session
-user_id = st.session_state.get("user_id")
-if not user_id:
-    st.warning("🔐 Please log in or continue as Guest to access Community Challenges.")
-    st.stop()
+CHALLENGE_CATEGORIES = {
+    "Energy": {"icon": "⚡", "color": "#ffc107", "points_per_action": 10},
+    "Water": {"icon": "💧", "color": "#4a90d9", "points_per_action": 8},
+    "Waste": {"icon": "♻️", "color": "#28a745", "points_per_action": 12},
+    "Food": {"icon": "🥗", "color": "#fd7e14", "points_per_action": 9},
+    "Transport": {"icon": "🚲", "color": "#20c997", "points_per_action": 11},
+    "Nature": {"icon": "🌳", "color": "#198754", "points_per_action": 15},
+    "Shopping": {"icon": "🛒", "color": "#e83e8c", "points_per_action": 7},
+    "Community": {"icon": "👥", "color": "#6f42c1", "points_per_action": 14},
+}
 
-# ── Page Header ───────────────────────────────────────────────────────────
-st.markdown("""
-<div style="text-align:center; padding:24px 0 16px; background:linear-gradient(135deg, rgba(34,197,94,0.06), rgba(59,130,246,0.04)); border-radius:16px; margin-bottom:24px;">
-    <span style="font-size:42px;">🏆</span>
-    <h1 style="margin:8px 0 4px; font-size:32px; font-weight:900; color:#111827;">Community Eco Challenges</h1>
-    <p style="color:#6b7280; font-size:15px; max-width:600px; margin:0 auto;">
-        Join eco-friendly challenges, form teams, earn XP, and compete to make the biggest environmental impact together!
-    </p>
-</div>
-""", unsafe_allow_html=True)
+# ---------------------------------------------------------------------------
+# Mock data
+# ---------------------------------------------------------------------------
 
-
-# ── Sidebar Filters ───────────────────────────────────────────────────────
-with st.sidebar:
-    st.subheader("🎯 Challenge Filters")
-    category_filter = st.selectbox("Category", ["All"] + get_available_categories(), index=0)
-    difficulty_filter = st.selectbox("Difficulty", ["All", "easy", "medium", "hard"], index=0)
-
-    cat = category_filter if category_filter != "All" else None
-    diff = difficulty_filter if difficulty_filter != "All" else None
-    all_challenges = list_active_challenges(category=cat, difficulty=diff)
-    st.caption(f"📋 {len(all_challenges)} challenges found")
-
-
-# ── User Dashboard ────────────────────────────────────────────────────────
-st.subheader("📊 Your Dashboard")
-dashboard = get_user_challenge_dashboard(user_id)
-
-# Stats Row
-render_stats_row({
-    "challenges_active": dashboard["challenges_active"],
-    "challenges_completed": dashboard["challenges_completed"],
-    "total_xp_earned": dashboard["total_xp_earned"],
-    "total_actions_logged": int(dashboard["total_actions_logged"]),
-})
-
-# Streak + Progress Side by Side
-col_streak, col_progress = st.columns([1, 2])
-
-with col_streak:
-    streak_data = get_user_streak(user_id)
-    render_streak_display(streak_data)
-
-with col_progress:
-    if dashboard["completed_challenges"]:
-        avg_completion = 100.0
-    elif dashboard["active_challenges"]:
-        pcts = []
-        for ch in dashboard["active_challenges"]:
-            my_p = ch.get("my_progress", {})
-            target = ch.get("target_value", 1)
-            if target > 0:
-                pcts.append(min(100, (my_p.get("current_progress", 0) / target) * 100))
-        avg_completion = sum(pcts) / len(pcts) if pcts else 0
-    else:
-        avg_completion = 0
-
-    fig_gauge = render_completion_gauge(avg_completion, "Avg Challenge Progress")
-    st.plotly_chart(fig_gauge, use_container_width=True)
-
-# Category & Difficulty Distribution
-cat_data = get_category_distribution(user_id)
-diff_data = get_difficulty_distribution(user_id)
-
-if cat_data or diff_data:
-    col_cat, col_diff = st.columns(2)
-    with col_cat:
-        if cat_data:
-            fig_cat = render_category_donut(cat_data, "Your Challenge Categories")
-            st.plotly_chart(fig_cat, use_container_width=True)
-    with col_diff:
-        if diff_data:
-            fig_diff = render_difficulty_bar(diff_data, "Your Difficulty Mix")
-            st.plotly_chart(fig_diff, use_container_width=True)
+def _generate_mock_challenges() -> list[dict[str, Any]]:
+    challenges = [
+        {"id": "CH-001", "title": "🚶 Walk or Bike to Work Week", "category": "Transport", "description": "Use zero-emission transport for your commute for 5 consecutive days.",
+         "points": 150, "duration": "7 days", "difficulty": "Medium", "participants": 342, "target": 5,
+         "icon": "🚲", "started": "2026-08-25", "ends": "2026-09-01", "status": "active"},
+        {"id": "CH-002", "title": "🧊 Zero Food Waste Challenge", "category": "Food", "description": "Track your food and ensure zero edible food goes to waste for 14 days.",
+         "points": 200, "duration": "14 days", "difficulty": "Hard", "participants": 189, "target": 14,
+         "icon": "🥗", "started": "2026-08-20", "ends": "2026-09-03", "status": "active"},
+        {"id": "CH-003", "title": "💡 Energy Saver Sprint", "category": "Energy", "description": "Reduce your daily electricity usage by 20% for 10 days.",
+         "points": 180, "duration": "10 days", "difficulty": "Medium", "participants": 456, "target": 10,
+         "icon": "⚡", "started": "2026-08-22", "ends": "2026-09-01", "status": "active"},
+        {"id": "CH-004", "title": "💧 Water Conservation Quest", "category": "Water", "description": "Keep daily water usage under 100 liters for 7 days.",
+         "points": 120, "duration": "7 days", "difficulty": "Easy", "participants": 523, "target": 7,
+         "icon": "💧", "started": "2026-08-27", "ends": "2026-09-03", "status": "active"},
+        {"id": "CH-005", "title": "♻️ Plastic-Free July (Extended)", "category": "Waste", "description": "Go 30 days without single-use plastic.",
+         "points": 500, "duration": "30 days", "difficulty": "Expert", "participants": 98, "target": 30,
+         "icon": "♻️", "started": "2026-08-01", "ends": "2026-08-31", "status": "active"},
+        {"id": "CH-006", "title": "🌳 Plant a Tree Weekend", "category": "Nature", "description": "Plant at least one tree or help with community tree planting.",
+         "points": 200, "duration": "2 days", "difficulty": "Easy", "participants": 678, "target": 1,
+         "icon": "🌳", "started": "2026-08-30", "ends": "2026-08-31", "status": "active"},
+        {"id": "CH-007", "title": "🛒 Sustainable Shopping Sprint", "category": "Shopping", "description": "Buy only secondhand or certified sustainable products for 2 weeks.",
+         "points": 175, "duration": "14 days", "difficulty": "Medium", "participants": 234, "target": 14,
+         "icon": "🛒", "started": "2026-09-01", "ends": "2026-09-15", "status": "upcoming"},
+        {"id": "CH-008", "title": "👥 Neighborhood Cleanup Rally", "category": "Community", "description": "Organize or join a neighborhood cleanup event this month.",
+         "points": 300, "duration": "30 days", "difficulty": "Medium", "participants": 412, "target": 3,
+         "icon": "👥", "started": "2026-09-01", "ends": "2026-09-30", "status": "upcoming"},
+    ]
+    return challenges
 
 
-# ── Main Tabs ─────────────────────────────────────────────────────────────
-st.markdown("---")
-tab_browse, tab_my, tab_create, tab_leaderboard = st.tabs([
-    "🌐 Browse Challenges", "🎯 My Challenges", "✨ Create Challenge", "🏆 Leaderboard"
-])
-
-# ── Browse Challenges ─────────────────────────────────────────────────────
-with tab_browse:
-    if not all_challenges:
-        st.info("No challenges match your filters. Try broadening your search or create a new one!")
-    else:
-        for ch in all_challenges:
-            overview = get_challenge_overview(ch["id"])
-            if not overview:
-                continue
-            my_progress = None
-            if dashboard:
-                for m in dashboard.get("active_challenges", []) + dashboard.get("completed_challenges", []):
-                    if m.get("id") == ch["id"]:
-                        my_progress = m.get("my_progress")
-                        break
-
-            render_challenge_card(overview, my_progress=my_progress, show_join=True)
-
-            # Action buttons
-            c1, c2, c3 = st.columns([1, 1, 2])
-            with c1:
-                if not my_progress:
-                    if st.button("🚀 Join", key=f"join_{ch['id']}", use_container_width=True):
-                        result = participate_in_challenge(ch["id"], user_id)
-                        if result["success"]:
-                            st.success(result["message"])
-                            st.rerun()
-                        else:
-                            st.error(result["error"])
-            with c2:
-                if my_progress and not my_progress.get("is_completed"):
-                    if st.button("📝 Log +1", key=f"log_{ch['id']}", use_container_width=True):
-                        result = submit_progress(ch["id"], user_id, 1.0, "Logged via Browse")
-                        if result["success"]:
-                            st.success(result["message"])
-                            st.rerun()
-                        else:
-                            st.error(result["error"])
-            st.markdown("---")
+def _generate_mock_leaderboard() -> list[dict[str, Any]]:
+    import random
+    random.seed(42)
+    users = [
+        {"name": "EcoWarrior99", "avatar": "🦸", "city": "Portland"},
+        {"name": "GreenMachine", "avatar": "🤖", "city": "Seattle"},
+        {"name": "TreeHugger42", "avatar": "🌿", "city": "Austin"},
+        {"name": "ZeroWasteHero", "avatar": "♻️", "city": "San Francisco"},
+        {"name": "SolarPowered", "avatar": "☀️", "city": "Denver"},
+        {"name": "BikeRider", "avatar": "🚲", "city": "Amsterdam"},
+        {"name": "OceanDefender", "avatar": "🌊", "city": "Miami"},
+        {"name": "CompostKing", "avatar": "👑", "city": "Portland"},
+        {"name": "WindWalker", "avatar": "💨", "city": "Chicago"},
+        {"name": "RainHarvester", "avatar": "🌧️", "city": "Melbourne"},
+        {"name": "VeganVibes", "avatar": "🌱", "city": "Brooklyn"},
+        {"name": "SmartHomeFan", "avatar": "🏠", "city": "Austin"},
+        {"name": "ThriftyFinds", "avatar": "🔍", "city": "Nashville"},
+        {"name": "CarbonCutter", "avatar": "✂️", "city": "Portland"},
+        {"name": "NatureLover", "avatar": "🦋", "city": "Boulder"},
+    ]
+    board = []
+    for i, user in enumerate(users):
+        points = random.randint(800, 5000)
+        board.append({
+            "rank": i + 1, **user, "points": points,
+            "challenges_completed": random.randint(5, 25),
+            "current_streak": random.randint(1, 45),
+            "best_streak": random.randint(5, 60),
+            "co2_saved_kg": round(random.uniform(50, 500), 1),
+            "badges": random.randint(3, 15),
+            "level": min(points // 500 + 1, 10),
+        })
+    board.sort(key=lambda x: x["points"], reverse=True)
+    for i, b in enumerate(board):
+        b["rank"] = i + 1
+    return board
 
 
-# ── My Challenges ─────────────────────────────────────────────────────────
-with tab_my:
-    if not dashboard["active_challenges"] and not dashboard["completed_challenges"]:
-        st.info("You haven't joined any challenges yet. Browse the list and jump in! 🚀")
-    else:
-        if dashboard["active_challenges"]:
-            st.subheader("🔥 Active Challenges")
-            for ch in dashboard["active_challenges"]:
-                my_p = ch.get("my_progress", {})
-                render_challenge_card(ch, my_progress=my_p)
-
-                # Detailed progress section
-                col_log, col_history = st.columns([1, 1])
-                with col_log:
-                    st.markdown("**📝 Log Progress**")
-                    log_val = st.number_input("Value", min_value=0.1, value=1.0, step=0.5,
-                                               key=f"logval_{ch['id']}")
-                    log_note = st.text_input("Note (optional)", placeholder="e.g., Cycled to work today",
-                                              key=f"lognote_{ch['id']}")
-                    if st.button("✅ Submit", key=f"submit_{ch['id']}", use_container_width=True):
-                        result = submit_progress(ch["id"], user_id, log_val, log_note)
-                        if result["success"]:
-                            st.success(result["message"])
-                            st.rerun()
-                        else:
-                            st.error(result["error"])
-
-                with col_history:
-                    st.markdown("**📈 Progress History**")
-                    daily = get_weekly_progress_data(ch["id"])
-                    if daily:
-                        fig_line = render_progress_line_chart(daily, f"{ch.get('title', '')} — Daily")
-                        st.plotly_chart(fig_line, use_container_width=True)
-                    else:
-                        st.caption("No progress logged yet.")
-
-                # Activity Feed
-                from community_challenge_db import get_activity_feed
-                feed = get_activity_feed(ch["id"], limit=5)
-                if feed:
-                    with st.expander("📰 Recent Activity"):
-                        for item in feed:
-                            render_feed_item(item)
-
-                st.markdown("---")
-
-        if dashboard["completed_challenges"]:
-            st.subheader("✅ Completed Challenges")
-            for ch in dashboard["completed_challenges"]:
-                my_p = ch.get("my_progress", {})
-                render_challenge_card(ch, my_progress=my_p)
-                st.caption(f"Completed on: {my_p.get('completed_at', 'N/A')}")
+def _generate_mock_badges() -> list[dict[str, Any]]:
+    return [
+        {"name": "🌱 First Step", "desc": "Complete your first challenge", "icon": "🌱", "rarity": "Common", "unlocked": True, "date": "2026-07-15"},
+        {"name": "🔥 Week Warrior", "desc": "7-day streak", "icon": "🔥", "rarity": "Uncommon", "unlocked": True, "date": "2026-07-22"},
+        {"name": "⚡ Energy Elite", "desc": "Complete 5 energy challenges", "icon": "⚡", "rarity": "Rare", "unlocked": True, "date": "2026-08-01"},
+        {"name": "💧 Water Whisperer", "desc": "Save 10,000 liters total", "icon": "💧", "rarity": "Rare", "unlocked": True, "date": "2026-08-05"},
+        {"name": "♻️ Recycling Rockstar", "desc": "Divert 100 kg from landfill", "icon": "♻️", "rarity": "Epic", "unlocked": True, "date": "2026-08-10"},
+        {"name": "🚲 Commute Champion", "desc": "30 days of green commuting", "icon": "🚲", "rarity": "Epic", "unlocked": True, "date": "2026-08-15"},
+        {"name": "🌳 Nature Guardian", "desc": "Plant 10 trees", "icon": "🌳", "rarity": "Rare", "unlocked": False, "progress": 7},
+        {"name": "🔥 Month Master", "desc": "30-day streak", "icon": "🔥", "rarity": "Legendary", "unlocked": False, "progress": 22},
+        {"name": "🏆 Grand Champion", "desc": "Reach #1 on leaderboard", "icon": "🏆", "rarity": "Legendary", "unlocked": False, "progress": None},
+        {"name": "👥 Team Builder", "desc": "Recruit 5 team members", "icon": "👥", "rarity": "Uncommon", "unlocked": False, "progress": 3},
+        {"name": "🌍 Global Citizen", "desc": "Complete challenges from 5 categories", "icon": "🌍", "rarity": "Rare", "unlocked": False, "progress": 4},
+        {"name": "♻️ Zero Waste Legend", "desc": "Complete the 30-day plastic-free challenge", "icon": "♻️", "rarity": "Legendary", "unlocked": False, "progress": 18},
+    ]
 
 
-# ── Create Challenge ──────────────────────────────────────────────────────
-with tab_create:
-    categories = get_available_categories()
-    diff_meta = get_difficulty_meta()
-    form_data = render_challenge_create_form(categories, diff_meta)
+def _generate_mock_teams() -> list[dict[str, Any]]:
+    return [
+        {"name": "Green Hawks", "members": 12, "total_points": 4560, "avg_streak": 18, "avatar": "🦅", "captain": "EcoWarrior99", "wins": 5, "category_focus": "Energy"},
+        {"name": "Eco Titans", "members": 15, "total_points": 5230, "avg_streak": 22, "avatar": "💪", "captain": "GreenMachine", "wins": 7, "category_focus": "Transport"},
+        {"name": "Nature's Army", "members": 10, "total_points": 3890, "avg_streak": 15, "avatar": "🌲", "captain": "TreeHugger42", "wins": 3, "category_focus": "Nature"},
+        {"name": "Zero Waste Warriors", "members": 8, "total_points": 3420, "avg_streak": 20, "avatar": "♻️", "captain": "ZeroWasteHero", "wins": 4, "category_focus": "Waste"},
+        {"name": "Aqua Savers", "members": 11, "total_points": 4100, "avg_streak": 16, "avatar": "💧", "captain": "RainHarvester", "wins": 2, "category_focus": "Water"},
+    ]
 
-    if form_data["submitted"]:
-        result = create_new_challenge(
-            title=form_data["title"],
-            description=form_data["description"],
-            category=form_data["category"],
-            difficulty=form_data["difficulty"],
-            target_value=form_data["target_value"],
-            target_unit=form_data["target_unit"],
-            xp_reward=form_data["xp_reward"],
-            duration_days=form_data["duration_days"],
-            created_by=user_id,
-        )
-        if result["success"]:
-            st.success(f"🎉 Challenge created! (ID: {result['challenge_id']})")
-            st.balloons()
-            st.rerun()
+
+# ---------------------------------------------------------------------------
+# Section renderers
+# ---------------------------------------------------------------------------
+
+def _render_active_challenges(challenges: list[dict]):
+    st.subheader("🎯 Challenges")
+    active = [c for c in challenges if c["status"] == "active"]
+    upcoming = [c for c in challenges if c["status"] == "upcoming"]
+    if active:
+        st.markdown(f"**🟢 Active ({len(active)})**")
+        for c in active:
+            cat = CHALLENGE_CATEGORIES.get(c["category"], {})
+            cat_color = cat.get("color", "#666")
+            import random
+            random.seed(hash(c["id"]))
+            progress = random.randint(1, c["target"])
+            pct = progress / c["target"] * 100
+            with st.expander(f"{c['icon']} **{c['title']}** — {c['points']} pts | {c['participants']} joined", expanded=False):
+                st.markdown(f"{c['description']}")
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Category", f"{cat.get('icon', '🎯')} {c['category']}")
+                c2.metric("Duration", c["duration"])
+                c3.metric("Difficulty", c["difficulty"])
+                c4.metric("Points", f"🏆 {c['points']}")
+                st.markdown(f"**Your Progress:** {progress}/{c['target']}")
+                st.markdown(
+                    f'<div style="background:#1e1e2e;border-radius:6px;height:20px;margin:6px 0">'
+                    f'<div style="width:{pct}%;background:{cat_color};border-radius:6px;height:100%;display:flex;align-items:center;justify-content:center;color:white;font-size:0.75em;font-weight:600">{progress}/{c["target"]}</div></div>',
+                    unsafe_allow_html=True,
+                )
+                end_date = datetime.strptime(c["ends"], "%Y-%m-%d")
+                days_left = (end_date - datetime.now()).days
+                st.caption(f"⏰ {max(days_left, 0)} days remaining")
+    if upcoming:
+        st.markdown(f"**🔵 Upcoming ({len(upcoming)})**")
+        for c in upcoming:
+            st.markdown(
+                f'<div style="border:1px solid #333;border-radius:8px;padding:10px;margin:6px 0;background:#f8f9fa">'
+                f'{c["icon"]} <strong>{c["title"]}</strong> — {c["points"]} pts | {c["duration"]}<br/>'
+                f'<span style="font-size:0.85em;color:#666">{c["description"][:80]}...</span></div>',
+                unsafe_allow_html=True,
+            )
+
+
+def _render_leaderboard(board: list[dict]):
+    st.subheader("🏆 Leaderboard")
+    if len(board) >= 3:
+        podium = [board[1], board[0], board[2]]
+        medals = ["🥈", "🥇", "🥉"]
+        cols = st.columns(3)
+        for i, (user, medal) in enumerate(zip(podium, medals)):
+            with cols[i]:
+                st.markdown(
+                    f'<div style="text-align:center;padding:16px;background:#f8f9fa;border-radius:12px;margin:8px 0">'
+                    f'<div style="font-size:2.5em">{medal}</div>'
+                    f'<div style="font-size:1.8em">{user["avatar"]}</div>'
+                    f'<div style="font-weight:700;font-size:1.1em">{user["name"]}</div>'
+                    f'<div style="color:#666">{user["city"]}</div>'
+                    f'<div style="color:#ffc107;font-weight:700;font-size:1.2em">{user["points"]:,} pts</div>'
+                    f'<div style="font-size:0.82em;color:#888">Level {user["level"]} | 🔥 {user["current_streak"]} streak</div>'
+                    f'</div>', unsafe_allow_html=True,
+                )
+    st.markdown("**Full Rankings:**")
+    rows = []
+    for b in board:
+        medal = "🥇" if b["rank"] == 1 else "🥈" if b["rank"] == 2 else "🥉" if b["rank"] == 3 else f"#{b['rank']}"
+        rows.append({"Rank": medal, "Player": f"{b['avatar']} {b['name']}", "City": b["city"],
+                     "Points": f"{b['points']:,}", "Level": b["level"], "Challenges": b["challenges_completed"],
+                     "Streak": f"🔥 {b['current_streak']}", "CO₂ Saved": f"{b['co2_saved_kg']} kg", "Badges": b["badges"]})
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+def _render_streak_tracker():
+    st.subheader("🔥 Streak Tracker")
+    import random
+    random.seed(88)
+    streak_days = 22
+    today = datetime.now()
+    cal_html = '<div style="display:flex;flex-wrap:wrap;gap:4px;padding:10px">'
+    for i in range(30):
+        day = today - timedelta(days=29 - i)
+        if i < streak_days:
+            icon = "🟡" if random.random() < 0.15 else "🟢"
+            color = "#ffc107" if icon == "🟡" else "#28a745"
+        elif i == streak_days:
+            color, icon = "#fd7e14", "🔥"
         else:
-            st.error(result["error"])
-
-
-# ── Leaderboard ───────────────────────────────────────────────────────────
-with tab_leaderboard:
-    active_ids = [ch["id"] for ch in all_challenges]
-
-    if not active_ids:
-        st.info("No active challenges to show leaderboards for.")
-    else:
-        selected_id = st.selectbox(
-            "Select Challenge",
-            active_ids,
-            format_func=lambda cid: next((c["title"] for c in all_challenges if c["id"] == cid), str(cid)),
+            color, icon = "#1e1e2e", "⬛"
+        cal_html += f'<div style="width:28px;height:28px;background:{color};border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.6em" title="{day.strftime("%b %d")}">{icon}</div>'
+    cal_html += '</div>'
+    st.markdown("**Last 30 Days:**")
+    st.markdown(cal_html, unsafe_allow_html=True)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Current Streak", "🔥 22 days")
+    c2.metric("Best Streak", "38 days")
+    c3.metric("Total Active Days", "156")
+    c4.metric("Streak Rank", "Top 15%")
+    st.markdown("You're on a **22-day streak** — keep going to unlock the **🔥 Month Master** badge at 30 days!")
+    st.markdown("**Streak Champions:**")
+    for champ in [
+        {"name": "🔥 CompostKing", "streak": 45, "city": "Portland"},
+        {"name": "🔥 GreenMachine", "streak": 38, "city": "Seattle"},
+        {"name": "🔥 EcoWarrior99", "streak": 35, "city": "Portland"},
+        {"name": "🔥 BikeRider", "streak": 32, "city": "Amsterdam"},
+        {"name": "🔥 OceanDefender", "streak": 28, "city": "Miami"},
+    ]:
+        st.markdown(
+            f'<div style="display:flex;align-items:center;margin:3px 0">'
+            f'<span style="width:180px;font-size:0.88em">{champ["name"]}</span>'
+            f'<div style="width:40%;background:#1e1e2e;border-radius:3px;height:14px">'
+            f'<div style="width:{champ["streak"]/50*100}%;background:#fd7e14;border-radius:3px;height:100%"></div></div>'
+            f'<span style="margin-left:8px;font-size:0.82em">{champ["streak"]} days | {champ["city"]}</span></div>',
+            unsafe_allow_html=True,
         )
 
-        challenge = get_challenge_overview(selected_id)
-        if not challenge:
-            st.error("Challenge not found")
-        else:
-            st.markdown(f"### {challenge.get('badge_icon', '🏆')} {challenge['title']}")
 
-            # Team Leaderboard
-            from community_challenge_db import get_team_leaderboard, get_user_leaderboard
-            teams = get_team_leaderboard(selected_id)
-            users = get_user_leaderboard(selected_id)
-
-            col_teams, col_users = st.columns(2)
-
-            with col_teams:
-                st.markdown("#### 👥 Teams")
-                if teams:
-                    fig_teams = render_team_comparison_chart(teams)
-                    st.plotly_chart(fig_teams, use_container_width=True)
-
-                    for rank, team in enumerate(teams, 1):
-                        render_leaderboard_entry(
-                            rank, team["team_name"], team["total_score"],
-                            challenge.get("target_value", 1), team.get("team_icon", "🌿"),
-                        )
-                else:
-                    st.caption("No teams yet. Start a team when joining!")
-
-            with col_users:
-                st.markdown("#### 🧑‍🤝‍🧑 Individuals")
-                if users:
-                    for rank, user in enumerate(users, 1):
-                        is_me = user.get("user_id") == user_id
-                        render_leaderboard_entry(
-                            rank, user.get("username", f"User-{user['user_id']}"),
-                            user.get("current_progress", 0),
-                            challenge.get("target_value", 1),
-                            is_user=is_me,
-                        )
-                else:
-                    st.caption("No participants yet.")
-
-            # Heatmap
-            st.markdown("---")
-            daily = get_weekly_progress_data(selected_id, days=28)
-            if daily:
-                fig_heat = render_progress_heatmap(daily, "Community Activity Heatmap")
-                st.plotly_chart(fig_heat, use_container_width=True)
-
-            # Full Activity Feed
-            from community_challenge_db import get_activity_feed
-            feed = get_activity_feed(selected_id, limit=20)
-            if feed:
-                with st.expander("📰 Full Activity Feed", expanded=False):
-                    for item in feed:
-                        render_feed_item(item)
+def _render_badges(badges: list[dict]):
+    st.subheader("🎖️ Achievement Badges")
+    unlocked = [b for b in badges if b["unlocked"]]
+    locked = [b for b in badges if not b["unlocked"]]
+    rarity_colors = {"Common": "#6c757d", "Uncommon": "#28a745", "Rare": "#4a90d9", "Epic": "#6f42c1", "Legendary": "#ffc107"}
+    st.markdown(f"**Unlocked ({len(unlocked)}/{len(badges)})**")
+    cols = st.columns(4)
+    for i, badge in enumerate(unlocked):
+        with cols[i % 4]:
+            color = rarity_colors.get(badge["rarity"], "#666")
+            st.markdown(
+                f'<div style="border:2px solid {color};border-radius:10px;padding:10px;margin:6px 0;text-align:center;background:#f8f9fa">'
+                f'<div style="font-size:2em">{badge["icon"]}</div>'
+                f'<div style="font-weight:600;font-size:0.85em">{badge["name"]}</div>'
+                f'<div style="font-size:0.75em;color:{color}">{badge["rarity"]}</div>'
+                f'<div style="font-size:0.72em;color:#888">{badge["date"]}</div></div>',
+                unsafe_allow_html=True,
+            )
+    st.markdown(f"**Locked ({len(locked)})**")
+    cols = st.columns(4)
+    for i, badge in enumerate(locked):
+        with cols[i % 4]:
+            color = rarity_colors.get(badge["rarity"], "#666")
+            progress_html = f'<div style="font-size:0.72em;color:#888">Progress: {badge["progress"]}</div>' if badge.get("progress") else ""
+            st.markdown(
+                f'<div style="border:1px solid #333;border-radius:10px;padding:10px;margin:6px 0;text-align:center;background:#1e1e2e;opacity:0.7">'
+                f'<div style="font-size:2em;filter:grayscale(1)">{badge["icon"]}</div>'
+                f'<div style="font-weight:600;font-size:0.85em">{badge["name"]}</div>'
+                f'<div style="font-size:0.75em;color:{color}">{badge["rarity"]}</div>'
+                f'{progress_html}</div>',
+                unsafe_allow_html=True,
+            )
 
 
-# ── Footer ────────────────────────────────────────────────────────────────
-st.markdown("---")
-st.markdown("""
-<div style="text-align:center; padding:16px; color:#9ca3af; font-size:13px;">
-    🌱 Community Eco Challenges — Powered by EcoBuddy AI &nbsp;|&nbsp; Every action counts!
-</div>
-""", unsafe_allow_html=True)
+def _render_team_competition(teams: list[dict]):
+    st.subheader("👥 Team Competition")
+    teams.sort(key=lambda x: x["total_points"], reverse=True)
+    for i, team in enumerate(teams):
+        medal = "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else f"#{i+1}"
+        color = "#ffc107" if i == 0 else "#c0c0c0" if i == 1 else "#cd7f32" if i == 2 else "#666"
+        cat = CHALLENGE_CATEGORIES.get(team["category_focus"], {})
+        with st.expander(f"{team['avatar']} **{team['name']}** — {medal} {team['total_points']:,} pts | {team['members']} members", expanded=(i < 3)):
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Members", team["members"])
+            c2.metric("Total Points", f"{team['total_points']:,}")
+            c3.metric("Avg Streak", f"🔥 {team['avg_streak']}")
+            c4.metric("Challenge Wins", team["wins"])
+            st.markdown(f"**Captain:** {team['captain']} | **Focus:** {cat.get('icon', '🎯')} {team['category_focus']}")
+            max_pts = teams[0]["total_points"]
+            pct = team["total_points"] / max_pts * 100
+            st.markdown(f'<div style="background:#1e1e2e;border-radius:4px;height:16px;margin:8px 0"><div style="width:{pct}%;background:{color};border-radius:4px;height:100%"></div></div>', unsafe_allow_html=True)
+
+
+def _render_category_progress():
+    st.subheader("📊 Category Progress")
+    import random
+    random.seed(55)
+    for cat_name, cat_data in CHALLENGE_CATEGORIES.items():
+        completed = random.randint(2, 12)
+        total = random.randint(10, 20)
+        pct = completed / total * 100
+        st.markdown(
+            f'<div style="display:flex;align-items:center;margin:5px 0">'
+            f'<span style="width:150px;font-size:0.88em">{cat_data["icon"]} {cat_name}</span>'
+            f'<div style="width:45%;background:#1e1e2e;border-radius:4px;height:18px">'
+            f'<div style="width:{pct}%;background:{cat_data["color"]};border-radius:4px;height:100%;display:flex;align-items:center;justify-content:center;color:white;font-size:0.72em;font-weight:600">{completed}/{total}</div></div>'
+            f'<span style="margin-left:8px;font-size:0.82em">{completed} completed | {cat_data["points_per_action"]} pts/action</span></div>',
+            unsafe_allow_html=True,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Main page
+# ---------------------------------------------------------------------------
+
+def render_community_eco_challenges():
+    st.title("🏆 Community Eco Challenges")
+    st.markdown("Join sustainability challenges, compete on leaderboards, track streaks, and earn badges.")
+    challenges = _generate_mock_challenges()
+    board = _generate_mock_leaderboard()
+    badges = _generate_mock_badges()
+    teams = _generate_mock_teams()
+    with st.sidebar:
+        st.header("⚙️ Settings")
+        show_challenges = st.checkbox("Active Challenges", True)
+        show_leaderboard = st.checkbox("Leaderboard", True)
+        show_streaks = st.checkbox("Streak Tracker", True)
+        show_badges = st.checkbox("Achievement Badges", True)
+        show_teams = st.checkbox("Team Competition", True)
+        show_categories = st.checkbox("Category Progress", True)
+    if show_challenges:
+        _render_active_challenges(challenges)
+    if show_leaderboard:
+        st.markdown("---")
+        _render_leaderboard(board)
+    if show_streaks:
+        st.markdown("---")
+        _render_streak_tracker()
+    if show_badges:
+        st.markdown("---")
+        _render_badges(badges)
+    if show_teams:
+        st.markdown("---")
+        _render_team_competition(teams)
+    if show_categories:
+        st.markdown("---")
+        _render_category_progress()
+    st.markdown("---")
+    st.caption(f"Community Eco Challenges | {len(challenges)} challenges | {len(board)} players | Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+
+
+if __name__ == "__main__" or True:
+    render_community_eco_challenges()
