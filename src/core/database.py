@@ -145,6 +145,17 @@ def init_db() -> bool:
                 """)
 
                 cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS repair_logs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        product_key TEXT,
+                        replaced_part TEXT,
+                        status TEXT,
+                        carbon_saved_kg REAL,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+
+                cursor.execute("""
                     CREATE TABLE IF NOT EXISTS anomaly_alerts (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         user_id TEXT,
@@ -9063,6 +9074,26 @@ def get_event_history() -> list:
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT guest_count, catering_type, total_emissions_kg, timestamp FROM event_plans ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
+def save_repair_log(product_key: str, replaced_part: str, status: str, carbon_saved_kg: float) -> None:
+    """Saves a product repair log to the database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO repair_logs (product_key, replaced_part, status, carbon_saved_kg)
+        VALUES (?, ?, ?, ?)
+    """, (product_key, replaced_part, status, carbon_saved_kg))
+    conn.commit()
+    conn.close()
+
+def get_repair_history() -> list:
+    """Retrieves historical product repair logs."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT product_key, replaced_part, status, carbon_saved_kg, timestamp FROM repair_logs ORDER BY timestamp DESC")
     rows = cursor.fetchall()
     conn.close()
     return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
