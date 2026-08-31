@@ -2,7 +2,7 @@ import html
 import time
 import logging
 import streamlit as st
-from logging_config import setup_logging
+from src.core.logging_config import setup_logging
 from styles.skeleton import show_card_skeleton, show_chart_skeleton
 
 setup_logging()
@@ -13,54 +13,238 @@ st.set_page_config(    page_title="EcoBuddy",
     layout="wide",
     initial_sidebar_state="expanded",
 )
-from eco_school import render_eco_school_hub
+from src.utils.eco_school import render_eco_school_hub
 import tempfile
 import uuid
 import os
-from global_search import render_global_search
+from pages.analytics_dashboard import render_analytics_dashboard
+from src.lib.routes import quizes_bp
+from src.utils.global_search import render_global_search
 from dotenv import load_dotenv
-from green_business import render_business_hub
-from eco_gamification import render_gamification_hub
+from src.business.green_business import render_business_hub
+from src.community.eco_gamification import render_gamification_hub
 from styles.theme import apply_theme
-from achievement_showcase import render_achievement_showcase
-from garden_Assistant import render_garden_hub
-from habit_tracker import render_habit_hub
-from event_calendar import render_event_hub
-from voice_assistant import render_voice_assessment
+from src.utils.smart_automation import render_automation_hub
+from src.utils.eco_mindfulness import render_mindfulness_hub
+from src.utils.achievement_showcase import render_achievement_showcase
+from src.utils.garden_Assistant import render_garden_hub
+from src.lifestyle.habit_tracker import render_habit_hub
+from src.utils.event_calendar import render_event_hub
+from src.utils.eco_creative import render_creative_hub
+from src.ai.voice_assistant import render_voice_assessment
 from components.header import render_header
 #from components.profile import render_profile
-from community_marketplace import render_marketplace_hub
-from sustainability_hub import (
+from src.community.community_marketplace import render_marketplace_hub
+from src.utils.sustainability_hub import (
     render_sustainability_hub  
 )
-from community_resilience import render_resilience_hub
-from eco_heritage import render_heritage_hub
-from eco_parenting import render_parenting_hub
-from mindset_coach import render_coach_hub
-from smart_home import render_smart_home_hub
-from fashion_guide import render_fashion_hub
-from certification_system import render_certification_hub
-from eco_news import render_news_hub
-from pet_care import render_pet_hub
-from community_dashboard import render_community_analytics
-from home_guide import render_home_hub
-from wellness_center import render_wellness_hub
-from learning_center import render_learning_hub
-from travel_planner import render_travel_hub
-from weather_alerts import render_weather_hub
-from eco_social import render_eco_social, render_eco_tip
-from volunteer_platform import render_volunteer_hub
+from src.lib.analytics_engine import get_analysis_summary
+from src.lib.predictive_model import generate_predictions, train_predictive_model
+from src.lib.trend_analyzer import analyze_trends
+from src.lib.insight_generator import generate_insights
+from src.utils.eco_dream_incubation import render_dream_hub
+from src.utils.eco_synesthesia import render_synesthesia_hub
+from src.community.community_resilience import render_resilience_hub
+from src.utils.eco_synchronization import render_synchronization_hub
+from src.utils.eco_heritage import render_heritage_hub
+from src.utils.eco_temporal import render_temporal_hub
+from src.lifestyle.eco_parenting import render_parenting_hub
+from src.utils.mindset_coach import render_coach_hub
+from src.energy.smart_home import render_smart_home_hub
+from src.lifestyle.fashion_guide import render_fashion_hub
+from src.business.certification_system import render_certification_hub
+from src.utils.eco_news import render_news_hub
+from src.lifestyle.pet_care import render_pet_hub
+from src.community.community_dashboard import render_community_analytics
+from src.lifestyle.home_guide import render_home_hub
+from src.lifestyle.wellness_center import render_wellness_hub
+from src.utils.learning_center import render_learning_hub
+from components.team_widget import render_community_widgets
+from pages.11_Community_Challenges import render_community_challenges
+from src.lifestyle.travel_planner import render_travel_hub
+from src.utils.weather_alerts import render_weather_hub
+from src.community.eco_social import render_eco_social, render_eco_tip
+from src.community.volunteer_platform import render_volunteer_hub
+import src.lifestyle.travel_tracker
 load_dotenv()
-from shopping_assistant import render_shopping_hub
-from impact_dashboard import render_impact_dashboard
-from database import init_db, save_assessment, get_assessments, init_gamification_db, init_freeze_tokens_db, save_assessment_draft, verify_user, create_user, get_leaderboard, update_user_leaderboard_preference
-import gamification as gf
-from emissions import calculate_footprint, calculate_eco_score
+import src.energy.energy_tracker
+from src.lifestyle.shopping_assistant import render_shopping_hub
+from components.chat import render_chat_ui
+from components.email_digest_ui import render_email_digest_ui
+import src.energy.energy_tracker
+import src.lifestyle.travel_tracker
+from src.reporting.impact_dashboard import render_impact_dashboard
+from src.core.database import init_db, save_assessment, get_assessments, init_gamification_db, init_freeze_tokens_db, save_assessment_draft, verify_user, create_user, get_leaderboard, update_user_leaderboard_preference, init_marketplace_db, init_energy_tracker_db
+import src.community.gamification as gf
+import src.energy.energy_tracker
+import src.lifestyle.travel_tracker
+from src.carbon.emissions import calculate_footprint, calculate_eco_score
 
-from recommendations import generate_recommendations
-from what_changed import generate_what_changed_analysis, render_what_changed_ui
+from src.ai.recommendations import generate_recommendations
+from src.utils.what_changed import generate_what_changed_analysis, render_what_changed_ui
 
 from datetime import datetime
+from src.lib.db_optimizer import get_query_optimizer, close_db_connections
+import time
+from src.lib.digest_scheduler import start_digest_scheduler
+from src.reporting.report import generate_pdf
+
+
+# Start the digest scheduler on app load
+try:
+    start_digest_scheduler()
+except Exception as e:
+    logger.error(f"Failed to start digest scheduler: {e}")
+
+# Start timing
+app_start_time = time.time()
+
+
+# Add a loading indicator with timing
+def measure_dashboard_load():
+    """Measure and log dashboard load time."""
+    global app_start_time
+    load_time = time.time() - app_start_time
+    
+    if load_time > 3.0:
+        logger.warning(f"Dashboard loading slow: {load_time:.2f}s")
+    else:
+        logger.info(f"Dashboard loaded in {load_time:.2f}s")
+    
+    return load_time
+# ----------------------------
+# Header & Authentication Layout
+# ----------------------------
+def render_top_auth():
+    """Renders the logo in the sidebar and auth controls on the top-right."""
+    
+    # Render EcoBuddy logo/branding in the sidebar unconditionally
+    st.sidebar.markdown("""
+        <div style='text-align: center; padding: 10px; margin-bottom: 20px; background: linear-gradient(135deg, rgba(34, 197, 94, 0.05), rgba(34, 197, 94, 0.15)); border-radius: 10px; border: 1px solid rgba(34, 197, 94, 0.2);'>
+            <h2 style='margin: 0; padding: 0; font-weight: 800; color: #1f2937;'>🌱 EcoBuddy <span style='color: #22c55e;'>AI</span></h2>
+        </div>
+    """, unsafe_allow_html=True)
+
+    if 'user_id' not in st.session_state:
+        st.session_state['user_id'] = None
+        st.session_state['username'] = None
+
+    if st.session_state.get('user_id'):
+        if check_session_timeout():
+            clear_auth_session()
+            st.warning("Your session has expired. Please sign in again.")
+            st.rerun()
+        else:
+            update_last_activity()
+
+    if st.session_state['user_id'] is None:
+        # Render Login, Register, and Guest options compactly in the top-right
+        _, auth_col = st.columns([2, 1])
+        
+        with auth_col:
+            with st.expander("👤 Sign In / Register", expanded=False):
+                tab1, tab2, tab3 = st.tabs(["Login", "Register", "Guest"])
+                
+                with tab1:
+                    username = st.text_input("Username", key="login_username", max_chars=30)
+                    password = st.text_input("Password", type="password")
+                    if st.button("Login", use_container_width=True):
+                        user = verify_user(username, password)
+                        if user:
+                            st.session_state['user_id'] = user['id']
+                            st.session_state['username'] = user['username']
+                            st.session_state['anonymous_leaderboard'] = user.get('anonymous_leaderboard', False)
+                            st.success("Logged in successfully!")
+                            st.rerun()
+                        else:
+                            st.error("Invalid username or password")
+                            
+                with tab2:
+                    username = st.text_input("Username", max_chars=30, key="reg_user")
+                    email = st.text_input("Email", max_chars=100)
+                    password = st.text_input("Password", type="password", key="reg_pass")
+                    anonymous = st.checkbox("Appear anonymously on leaderboard")
+                    if st.button("Register", use_container_width=True):
+                        if create_user(username, email, password, anonymous_leaderboard=anonymous):
+                            st.success("Registration successful! Please login.")
+                        else:
+                            st.error("Username or email already exists")
+                            
+                with tab3:
+                    st.write("Explore EcoBuddy AI without creating an account.")
+                    if st.button("Continue as Guest", use_container_width=True):
+                        st.session_state['user_id'] = 1
+                        st.session_state['username'] = "Guest"
+                        st.rerun()
+                    
+        return None
+    else:
+        # Maintain existing sidebar navigation for authenticated users
+        st.sidebar.write(f"Logged in as **{st.session_state['username']}**")
+        
+        anon_pref = st.sidebar.checkbox(
+            "Appear anonymously on leaderboard",
+            value=st.session_state.get("anonymous_leaderboard", False)
+        )
+        if anon_pref != st.session_state.get("anonymous_leaderboard", False):
+            update_user_leaderboard_preference(st.session_state['user_id'], anon_pref)
+            set_session_state_if_changed('anonymous_leaderboard', anon_pref)
+            st.sidebar.success("Leaderboard preference saved.")
+            st.rerun()
+
+        if st.sidebar.button("Logout"):
+            clear_auth_session()
+            for key, val in DEFAULT_VALUES.items():
+                st.session_state[key] = val
+            st.rerun()
+
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("🧭 Navigation")
+        st.sidebar.page_link("pages/04_Quiz.py", label="📝 Quiz")
+        st.sidebar.page_link("pages/Sustainability_Roadmap.py", label="🗺️ Roadmap")
+        st.sidebar.page_link("pages/25_Environmental_Benchmarking.py", label="📊 Benchmarking")
+        st.sidebar.page_link("pages/Eco_Data_Import_Hub.py", label="📥 Data Import Hub")
+        st.sidebar.page_link("pages/26_Health_Environment.py", label="🏃 Health & Environment")
+        st.sidebar.markdown("---")
+        with st.sidebar.expander("👥 Community", expanded=False):
+            render_community_widgets(user_id)
+        from src.lib.carbon_tracker import get_carbon_tracker, update_carbon_tracker, render_carbon_widget
+        with st.sidebar:
+            st.divider()
+            st.subheader("📊 Live Carbon Tracker")
+            if 'transport' in st.session_state and 'distance' in st.session_state:
+                tracker_data = {
+                    "transport": st.session_state.get('transport', 'Car'),
+                    "distance": st.session_state.get('distance', 10.0),
+                    "electricity": st.session_state.get('electricity', 200.0),
+                    "diet": st.session_state.get('diet', 'Vegetarian'),
+                    "flights": st.session_state.get('flights', 0),
+                    "region": st.session_state.get('region', 'Global')
+                }
+                if st.session_state.get('_last_tracker_update', 0) < time.time() - 0.5:
+                    try:
+                        update_carbon_tracker(tracker_data)
+                        st.session_state['_last_tracker_update'] = time.time()
+                    except Exception as e:
+                        pass
+            render_carbon_widget()
+            st.caption("🟢 Live updates enabled")
+
+        with st.sidebar.expander("🌱 Sustainability", expanded=True):
+            st.write("🌍 Carbon Footprint")
+            st.write("⚡ Home Energy Audit")
+            st.write("🎮 Gamification")
+        with st.sidebar.expander("🗺️ Travel & Community", expanded=False):
+            st.write("🗺️ Route Planning & Offsets")
+            st.write("🏆 Community Leaderboard")
+        with st.sidebar.expander("🔮 Insights", expanded=False):
+            st.write("🔮 Future Self")
+            st.write("📊 Environmental Timeline")
+
+        return st.session_state['user_id']
+
+# Execute the top authentication logic
+user_id = render_top_auth()
 
 # ----------------------------
 # Welcome Section
@@ -71,7 +255,7 @@ st.markdown(
     """
     Welcome to **EcoBuddy AI**, an intelligent sustainability platform designed
     to help users understand their environmental impact through AI-powered
-    insights, carbon footprint analysis, and eco-friendly recommendations.
+    insights, carbon footprint analysis, and eco-friendly src.ai.recommendations.
     """
 )
 
@@ -162,7 +346,7 @@ with form:
         discard_current_draft,
         render_draft_recovery_prompt,
     )
-    from session_state_utils import (
+    from src.core.session_state_utils import (
         ensure_session_state,
         set_session_state_if_changed,
         check_session_timeout,
@@ -204,168 +388,7 @@ with form:
             ).strftime("%d %b %Y %I:%M %p")
         return "-"
 
-    def render_sidebar_auth():
-        st.sidebar.title("Authentication")
-        if 'user_id' not in st.session_state:
-            st.session_state['user_id'] = None
-            st.session_state['username'] = None
 
-        if st.session_state.get('user_id'):
-            if check_session_timeout():
-                clear_auth_session()
-                st.sidebar.warning("Your session has expired. Please sign in again.")
-                st.rerun()
-            else:
-                update_last_activity()
-
-        if st.session_state['user_id'] is None:
-            auth_mode = st.sidebar.radio("Choose Mode", ["Login", "Register", "Guest"])
-            if auth_mode == "Login":
-                with st.sidebar.form("login_form"):
-                    MAX_USERNAME = 30
-
-                    username = st.text_input(
-                        "Username",
-                        key="login_username",
-                        max_chars=MAX_USERNAME,
-                        help="Enter your registered username."
-                    )
-
-                    username = username or ""
-                    st.caption(f"👤 {len(username)}/{MAX_USERNAME} characters")
-
-                    password = st.text_input("Password", type="password",
-                    help="Enter your account password. Characters will be hidden for security.")
-                    if st.form_submit_button("Login"):
-                        user = verify_user(username, password)
-                        if user:
-                            st.session_state['user_id'] = user['id']
-                            st.session_state['username'] = user['username']
-                            st.session_state['anonymous_leaderboard'] = user.get('anonymous_leaderboard', False)
-                            st.sidebar.success("Logged in successfully!")
-                            st.rerun()
-                        else:
-                            st.sidebar.error("Invalid username or password")
-            elif auth_mode == "Register":
-                with st.sidebar.form("register_form"):
-                    MAX_USERNAME = 30
-
-                    username = st.text_input(
-                        "Username",
-                        max_chars=MAX_USERNAME,
-                        help="Choose a unique username."
-                    )
-
-                    st.caption(f"👤 {len(username)}/{MAX_USERNAME} characters")
-                    MAX_EMAIL = 100
-
-                    email = st.text_input(
-                        "Email",
-                        max_chars=MAX_EMAIL,
-                        help="Enter a valid email address."
-                    )
-
-                    st.caption(f"📧 {len(email)}/{MAX_EMAIL} characters")
-                    password = st.text_input("Password", type="password",help="Use a strong password with letters, numbers, and special characters.")
-                    anonymous = st.checkbox("Appear anonymously on leaderboard")
-                    if st.form_submit_button("Register"):
-                        if create_user(username, email, password, anonymous_leaderboard=anonymous):
-                            st.sidebar.success("Registration successful! Please login.")
-                        else:
-                            st.sidebar.error("Username or email already exists")
-            elif auth_mode == "Guest":
-                if st.sidebar.button("Continue as Guest"):
-                    st.session_state['user_id'] = 1
-                    st.session_state['username'] = "Guest"
-                    st.rerun()
-        
-            st.sidebar.warning("Please log in or continue as Guest to use the app.")
-            st.stop()
-        else:
-            st.sidebar.write(f"Logged in as **{st.session_state['username']}**")
-            anon_pref = st.sidebar.checkbox(
-                "Appear anonymously on leaderboard",
-                value=st.session_state.get("anonymous_leaderboard", False)
-            )
-            if anon_pref != st.session_state.get("anonymous_leaderboard", False):
-                update_user_leaderboard_preference(st.session_state['user_id'], anon_pref)
-                set_session_state_if_changed('anonymous_leaderboard', anon_pref)
-                st.sidebar.success("Leaderboard preference saved.")
-                st.experimental_rerun()
-
-            if st.sidebar.button("Logout"):
-                clear_auth_session()
-                for key, val in DEFAULT_VALUES.items():
-                    st.session_state[key] = val
-                st.rerun()
-
-            st.sidebar.markdown("---")
-            st.sidebar.subheader("🧭 Navigation")
-
-            st.markdown("""
-            <style>
-
-            /* Sidebar navigation expanders */
-            [data-testid="stSidebar"] [data-testid="stExpander"] {
-                border: 1px solid rgba(34, 197, 94, 0.18);
-                border-radius: 12px;
-                margin-bottom: 10px;
-                background: rgba(255, 255, 255, 0.03);
-                transition: all 0.25s ease;
-            }
-
-
-run_db_initializations()
-user_id = render_sidebar_auth()
-render_theme_selector()
-selected_dashboard_widgets = render_widget_customizer(user_id)
-render_customizable_dashboard(user_id, selected_dashboard_widgets)
-run_db_initializations()
-user_id = render_sidebar_auth()
-render_theme_selector()
-
-render_global_search(user_id)
-
-selected_dashboard_widgets = render_widget_customizer(user_id)
-render_customizable_dashboard(user_id, selected_dashboard_widgets)
-with st.expander("🌍 Environmental Impact Timeline", expanded=False):
-    render_environmental_timeline(user_id)
-
-            /* Expander header */
-            [data-testid="stSidebar"] [data-testid="stExpander"] summary {
-                font-weight: 700;
-                transition: all 0.25s ease;
-            }
-
-            /* Hover effect */
-            [data-testid="stSidebar"] [data-testid="stExpander"]:hover {
-                border-color: rgba(34, 197, 94, 0.45);
-                transform: translateX(2px);
-            }
-
-
-            /* Navigation content */
-            [data-testid="stSidebar"] [data-testid="stExpander"] div[role="group"] {
-                padding: 4px 8px 8px 8px;
-            }
-
-            </style>
-            """, unsafe_allow_html=True)
-
-            with st.sidebar.expander("🌱 Sustainability", expanded=True):
-                st.write("🌍 Carbon Footprint")
-                st.write("⚡ Home Energy Audit")
-                st.write("🎮 Gamification")
-
-            with st.sidebar.expander("🗺️ Travel & Community", expanded=False):
-                st.write("🗺️ Route Planning & Offsets")
-                st.write("🏆 Community Leaderboard")
-
-            with st.sidebar.expander("🔮 Insights", expanded=False):
-                st.write("🔮 Future Self")
-                st.write("📊 Environmental Timeline")
-
-        return st.session_state['user_id']
 
     # -------------------------
     # INIT
@@ -385,9 +408,12 @@ with st.expander("🌍 Environmental Impact Timeline", expanded=False):
         init_gamification_db()
         init_freeze_tokens_db()
         init_marketplace_db()
+        # init_energy_tracker_db()
 
     run_db_initializations()
-    user_id = render_sidebar_auth()
+    if user_id is None:
+        st.warning("Please log in or continue as Guest to use the full application.")
+        st.stop()
     render_theme_selector()
     selected_dashboard_widgets = render_widget_customizer(user_id)
     render_customizable_dashboard(user_id, selected_dashboard_widgets)
@@ -1035,6 +1061,12 @@ with st.expander("🌍 Environmental Impact Timeline", expanded=False):
     # -------------------------
 render_header()
 
+# ── Theme Toggle in Header ──────────────────────────────────────────────────
+from styles.theme_manager import render_theme_toggle
+
+col1, col2 = st.columns([0.95, 0.05])
+with col2:
+    render_theme_toggle()
 
     # -------------------------
     # PDF REPORT GENERATION
@@ -1171,8 +1203,8 @@ tab1, tab2, tab3, tab4 = st.tabs(["🌍 Carbon Footprint", "⚡ Home Energy Audi
 
 
 # -------------------------
-from green_mobility import render_mobility_hub
-tab1, tab2, tab3, tab4, tab5,tab38, tab6, tab37,tab7, tab8, tab9, tab10, tab11,tab36, tab12, tab13, tab14, tab15, tab16, tab17, tab18, tab19, tab20, tab21, tab22, tab23, tab24,tab34,tab35, tab25,tab26,tab27,tab28,tab29,tab30,tab31,tab32,tab33 = st.tabs([
+from src.lifestyle.green_mobility import render_mobility_hub
+tab1, tab2, tab3, tab4, tab5,tab38, tab6, tab37,tab7, tab8, tab9, tab10, tab11,tab36, tab12, tab13, tab14, tab15, tab16, tab17, tab18, tab19, tab20, tab21, tab22, tab23, tab24,tab34,tab35, tab25,tab26,tab27,tab28,tab29,tab30,tab31,tab32,tab33, tab39, tab40, tab41 = st.tabs([
     "🌍 Carbon Footprint",
     "⚡ Home Energy Audit",
     "🎮 Gamification",
@@ -1197,7 +1229,7 @@ tab1, tab2, tab3, tab4, tab5,tab38, tab6, tab37,tab7, tab8, tab9, tab10, tab11,t
     "🤝 Volunteer",
     "👗 Fashion",
     "🏅 Certification",
-    "🛒 Shopping" ,
+    "🛒 Shopping",
     "Eco-Impact",
     "Habit-Tracker",
     "Event-Planner",
@@ -1208,26 +1240,30 @@ tab1, tab2, tab3, tab4, tab5,tab38, tab6, tab37,tab7, tab8, tab9, tab10, tab11,t
     "Eco-Heritage",
     "Eco-Parenting",
     "Eco-Resillence",
-    "green_business.py"
+    "src.business.green_business.py",
+    "📧 Email Digest",
+    "💬 Eco Chat",
+    "🎨 Eco-Art",
+    "🛒 Ethical Shopping",
+    "🌾 Urban Farming"
+    "📊 Analytics Dashboard" 
+    "🏆 Community Challenges"
 ])
 # Import
-from urban_farming import render_urban_hub
-
-# Add as a new tab
-with tab41:
-    render_urban_hub()
-# Import
-from ethical_shopping import render_consumer_hub
-
-# Add as a new tab
-with tab40:
-    render_consumer_hub()
-# Import
-from eco_art import render_art_hub
-
-# Add as a new tab
-with tab39:
-    render_art_hub()
+# from urban_farming import render_urban_hub
+# # Add as a new tab
+# with tab41:
+#     render_urban_hub()
+# # Import
+# from ethical_shopping import render_consumer_hub
+# # Add as a new tab
+# with tab40:
+#     render_consumer_hub()
+# # Import
+# from eco_art import render_art_hub
+# # Add as a new tab
+# with tab39:
+#     render_art_hub()
 with tab38:
     render_mobility_hub()
 with tab37:
@@ -1256,6 +1292,8 @@ with tab26:
     render_impact_dashboard()
 with tab25:
     render_shopping_hub()
+with tab43:
+    render_community_challenges(user_id)
 
 with tab24:
     render_certification_hub()
@@ -1296,10 +1334,15 @@ with tab13:
     render_home_hub()
 with tab14:
     render_pet_hub()
+with tab42:
+    render_analytics_dashboard()
 with placeholder.container():
     show_card_skeleton()
     show_chart_skeleton()
-
+# with tab32:
+#     render_chat_ui()
+# with tab_email:
+#     render_email_digest_ui(user_id)
 # Existing analysis code here
 
 placeholder.empty()
@@ -1632,7 +1675,7 @@ with tab1:
 
         if electricity_emission > 5:
             cross_module_suggestions.append(
-                "⚡ Open the Home Energy Audit section for personalized electricity-saving recommendations."
+                "⚡ Open the Home Energy Audit section for personalized electricity-saving src.ai.recommendations."
             )
 
         if flight_emission > 2:
@@ -1764,7 +1807,7 @@ with tab1:
 
             st.info(
                 "Providing more complete information will improve the accuracy "
-                "of your carbon footprint calculations and recommendations."
+                "of your carbon footprint calculations and src.ai.recommendations."
             )
 
         st.markdown("#### 💡 Improvement Suggestions")
@@ -1798,7 +1841,7 @@ with tab1:
 
         if contributors.get("transport", 0) > 0:
             feature_suggestions.append(
-                "🚗 Try the Route Planning & Offsets tab to compare greener travel options and reduce transport emissions."
+                "🚗 Try the Route Planning & Offsets tab to compare greener travel options and reduce transport src.carbon.emissions."
             )
 
         if electricity > 150:
@@ -2004,12 +2047,12 @@ with tab1:
             improvements.append("⚡ Try lowering monthly electricity usage.")
 
         if diet == "Vegetarian":
-            strengths.append("🥗 Plant-based diet reduces emissions.")
+            strengths.append("🥗 Plant-based diet reduces src.carbon.emissions.")
         else:
             improvements.append("🥩 Consider reducing meat consumption.")
 
         if flights == 0:
-            strengths.append("✈ Minimal flight emissions.")
+            strengths.append("✈ Minimal flight src.carbon.emissions.")
         else:
             improvements.append("✈ Reduce unnecessary air travel.")
 
@@ -2263,7 +2306,7 @@ with tab1:
                     col_exp1, col_exp2 = st.columns(2)
         
                     # Export PNG (High Quality Scale = 3)
-                    png_bytes = breakdown_fig.to_image(format="png", width=1200, height=700, scale=3)
+                    png_bytes = fig.to_image(format="png", width=1200, height=700, scale=3)
                     col_exp1.download_button(
                         label="📥 Export Chart as PNG",
                         data=png_bytes,
@@ -2273,7 +2316,7 @@ with tab1:
                     )
         
                     # Export SVG (Vector Quality)
-                    svg_bytes = breakdown_fig.to_image(format="svg", width=1200, height=700)
+                    svg_bytes = fig.to_image(format="svg", width=1200, height=700)
                     col_exp2.download_button(
                         label="📥 Export Chart as SVG",
                         data=svg_bytes,
@@ -2473,13 +2516,13 @@ with tab1:
         if electricity_emission > 5:
             learning_cards.append(
                 ("💡 Energy Saving",
-                "Turning off unused appliances and using LED bulbs helps lower electricity emissions.")
+                "Turning off unused appliances and using LED bulbs helps lower electricity src.carbon.emissions.")
             )
 
         if flight_emission > 0:
             learning_cards.append(
                 ("✈️ Sustainable Travel",
-                "Consider trains or virtual meetings whenever possible to reduce travel emissions.")
+                "Consider trains or virtual meetings whenever possible to reduce travel src.carbon.emissions.")
             )
 
         if diet_emission > 2:
@@ -2625,7 +2668,7 @@ with tab1:
             bad.append("Try including more plant-based meals.")
         
         if flights > 2:
-            bad.append("Reduce air travel or offset flight emissions.")
+            bad.append("Reduce air travel or offset flight src.carbon.emissions.")
         
         if len(bad) == 0:
             st.success("Excellent! No major improvement areas found.")
@@ -2913,7 +2956,7 @@ with tab1:
         You are below the average citizen.
 
         Small improvements in transportation or electricity
-        usage can further reduce your emissions.
+        usage can further reduce your src.carbon.emissions.
         """
             )
 
@@ -3201,7 +3244,7 @@ with tab1:
         elif eco_score >= 75:
             st.info("You are close to becoming an Eco Champion.")
         elif eco_score >= 60:
-            st.warning("A few improvements will significantly reduce your emissions.")
+            st.warning("A few improvements will significantly reduce your src.carbon.emissions.")
         else:
             st.error("Your action plan should focus on high-priority improvements first.")
 
@@ -3217,19 +3260,19 @@ with tab1:
         )
 
 
-        if not report_validation.is_valid:
+        if not src.reporting.report_validation.is_valid:
             st.error(
                 "The report could not be generated because the assessment "
                 "contains invalid or incomplete data."
             )
-            for validation_error in report_validation.errors:
+            for validation_error in src.reporting.report_validation.errors:
                 st.warning(f"• {validation_error}")
         else:
             from report import generate_pdf
             report = generate_pdf(
-                report_validation.cleaned_data["total"],
-                report_validation.cleaned_data["eco_score"],
-                report_validation.cleaned_data["insight"],
+                src.reporting.report_validation.cleaned_data["total"],
+                src.reporting.report_validation.cleaned_data["eco_score"],
+                src.reporting.report_validation.cleaned_data["insight"],
             )
 
             if report:
@@ -3679,7 +3722,7 @@ with tab1:
             alerts.append("Electricity consumption is above the recommended range.")
 
         if flights > 3:
-            alerts.append("Frequent air travel greatly increases emissions.")
+            alerts.append("Frequent air travel greatly increases src.carbon.emissions.")
 
         if eco_score < 60:
             alerts.append("Your Eco Score indicates room for improvement.")
@@ -3733,7 +3776,7 @@ with tab1:
 
         elif highest == "Diet":
         
-            st.write("🥗 Dietary changes can noticeably reduce emissions.")
+            st.write("🥗 Dietary changes can noticeably reduce src.carbon.emissions.")
 
         elif highest == "Flights":
         
@@ -3756,7 +3799,7 @@ with tab1:
         elif used_percent < 80:
         
             st.info(
-                "Minor lifestyle improvements can further reduce emissions."
+                "Minor lifestyle improvements can further reduce src.carbon.emissions."
             )
 
         else:
@@ -4090,7 +4133,7 @@ with tab1:
 
         if transport == "Car":
             notifications.append(
-                "🚗 Transportation is a major contributor to your emissions."
+                "🚗 Transportation is a major contributor to your src.carbon.emissions."
             )
 
         if electricity > 250:
@@ -4127,7 +4170,7 @@ with tab1:
 
         if transport == "Car":
             advice.append(
-                "Switching to public transport a few days each week could noticeably reduce your monthly emissions."
+                "Switching to public transport a few days each week could noticeably reduce your monthly src.carbon.emissions."
             )
 
         if electricity > 200:
@@ -4137,7 +4180,7 @@ with tab1:
 
         if diet == "Non-Vegetarian":
             advice.append(
-                "Increasing plant-based meals can reduce food-related emissions."
+                "Increasing plant-based meals can reduce food-related src.carbon.emissions."
             )
 
         if flights > 2:
@@ -4226,347 +4269,224 @@ with tab1:
         )        
         render_sustainability_hub()
         render_eco_tip()
-        # -------------------------
-        # HISTORY & TRACKING
-        # -------------------------
+
+        # ── Quick Analytics Stats ──────────────────────────────────────────────────────
         st.markdown("---")
-        with st.expander("🕒 Assessment Timeline", expanded=False):
-            st.markdown("<div class='section-header'>📈 Your Eco Journey</div>", unsafe_allow_html=True)
+        st.markdown("### 📊 Quick Analytics")
 
-        history = get_assessments(user_id)
-
-        # ----------------------------------
-        # Eco Action Streak Risk Detector
-        # ----------------------------------
-
-        if history and len(history) >= 3:
-            recent_scores = [row[-1] for row in history[:3]]
-
-            score_drop = recent_scores[2] - recent_scores[0]
-
-            if score_drop >= 20:
-                risk = "🔴 High Risk"
-                color = "#ff4d4d"
-            elif score_drop >= 10:
-                risk = "🟠 Medium Risk"
-                color = "#ff9800"
+        try:
+            from src.lib.analytics_engine import get_analysis_summary
+            from src.core.database import get_assessments
+            
+            assessments = get_assessments(user_id)
+            if assessments and len(assessments) >= 3:
+                summary = get_analysis_summary(assessments)
+                
+                if summary.get('success'):
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric(
+                            "📝 Total Assessments",
+                            summary.get('total_assessments', 0)
+                        )
+                    with col2:
+                        st.metric(
+                            "🌍 Avg Footprint",
+                            f"{summary.get('average_footprint', 0):.1f} kg"
+                        )
+                    with col3:
+                        trend = summary.get('trend', 'stable')
+                        trend_icon = "📉" if trend == "decreasing" else "📈" if trend == "increasing" else "➡️"
+                        st.metric(
+                            "📊 Trend",
+                            f"{trend_icon} {trend.title()}"
+                        )
+                    with col4:
+                        improvement = summary.get('improvement', 0)
+                        st.metric(
+                            "📈 Improvement",
+                            f"{improvement:+.1f}%"
+                        )
+                    
+                    # Quick insights preview
+                    if summary.get('insights_count', 0) > 0:
+                        st.info(f"💡 You have {summary.get('insights_count', 0)} new insights available! Click the Analytics Dashboard tab to view them.")
+                    
+                    # Quick link to analytics
+                    if st.button("📊 Go to Analytics Dashboard", use_container_width=True):
+                        # Switch to analytics tab - we'll use JavaScript to switch tabs
+                        st.markdown("""
+                        <script>
+                            // Find the analytics tab and click it
+                            const tabs = document.querySelectorAll('[data-baseweb="tab"]');
+                            for (let tab of tabs) {
+                                if (tab.textContent.includes('Analytics Dashboard')) {
+                                    tab.click();
+                                    break;
+                                }
+                            }
+                        </script>
+                        """, unsafe_allow_html=True)
             else:
-                risk = "🟢 Low Risk"
-                color = "#4caf50"
+                st.info("🌱 Complete 3+ assessments to unlock the Analytics Dashboard with AI-powered insights and predictive forecasts!")
+                
+        except ImportError:
+            st.info("📊 Analytics module will be available soon!")
+        except Exception as e:
+            logger.warning(f"Analytics quick stats unavailable: {e}")
+        # ── Assessment History with Pagination ──────────────────────────────────────
+        from src.lib.history_manager import (
+            HistoryManager,
+            render_history_filters,
+            render_history_pagination,
+            render_history_stats
+        )
 
-            st.markdown(
-                f"""
-                <div style="
-                    padding:14px;
-                    border-radius:12px;
-                    background:#111827;
-                    border-left:6px solid {color};
-                    margin-bottom:12px;">
-                    <h4>{risk}</h4>
-                    <p>Your recent assessments were analyzed automatically.</p>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
+        # Initialize history manager
+        if 'history_manager' not in st.session_state or st.session_state.history_manager.user_id != user_id:
+            st.session_state.history_manager = HistoryManager(user_id)
+            st.session_state.history_manager.load_assessments()
 
-            if recent_scores[0] < recent_scores[1] < recent_scores[2]:
-                st.warning("⚠️ Eco Action Streak at Risk!")
+        manager = st.session_state.history_manager
 
-                st.write(
-                    "Your Eco Score has declined over your last three assessments. "
-                    "Take action now to protect your sustainability streak."
-                )
+        # Render history section
+        st.markdown("---")
+        st.markdown("<div class='section-header'>📊 Assessment History</div>", unsafe_allow_html=True)
 
-                st.info(
-                    """
-            ### 🌱 Suggested Recovery Actions
+        # Statistics
+        render_history_stats(manager)
 
-            - 🚶 Walk, cycle, or use public transport.
-            - 💡 Reduce unnecessary electricity consumption.
-            - 🥗 Choose more sustainable food options.
-            - ✈️ Avoid non-essential flights whenever possible.
-                        """
-                )
-            else:
-                st.success("✅ Great! Your sustainability streak is stable.")
+        # Filters
+        render_history_filters(manager)
 
+        # Data table
+        st.divider()
+
+        # Display current page
+        current_page = manager.get_current_page()
+
+        if current_page:
             import pandas as pd
-            import plotly.express as px
-
-            trend_df = pd.DataFrame({
-                "Assessment": ["Oldest", "Previous", "Latest"],
-                "Eco Score": [
-                    recent_scores[2],
-                    recent_scores[1],
-                    recent_scores[0]
-                ]
-            })
-
-            fig = px.line(
-                trend_df,
-                x="Assessment",
-                y="Eco Score",
-                markers=True,
-                title="Eco Score Trend"
+            df = pd.DataFrame(current_page)
+            display_df = df[["date", "transport", "distance", "electricity", "diet", "flights", "footprint", "eco_score"]]
+            display_df.columns = ["📅 Date", "🚗 Transport", "⚡ Electricity", "🥗 Diet", "✈️ Flights", "🌍 Footprint", "⭐ Eco Score"]
+            
+            st.dataframe(
+                display_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "📅 Date": st.column_config.TextColumn("📅 Date"),
+                    "🚗 Transport": st.column_config.TextColumn("🚗 Transport"),
+                    "⚡ Electricity": st.column_config.NumberColumn("⚡ Electricity", format="%.0f kWh"),
+                    "🥗 Diet": st.column_config.TextColumn("🥗 Diet"),
+                    "✈️ Flights": st.column_config.NumberColumn("✈️ Flights", format="%d"),
+                    "🌍 Footprint": st.column_config.NumberColumn("🌍 Footprint", format="%.1f kg"),
+                    "⭐ Eco Score": st.column_config.NumberColumn("⭐ Eco Score", format="%d/100"),
+                }
             )
 
-            st.plotly_chart(fig, use_container_width=True)
+            # ── Export Options ────────────────────────────────────────────────────────────
+            st.markdown("---")
+            st.markdown("### 📤 Export Data")
 
-            recovery = max(0, 100 - score_drop * 5)
-
-            st.markdown("### 🔋 Recovery Readiness")
-
-            st.progress(recovery / 100)
-
-            st.caption(f"Recovery Score: {recovery}%")
-
-            st.markdown("### 🌱 Personalized Recovery Plan")
-
-            tips = []
-
-            if score_drop >= 20:
-                tips.extend([
-                    "🚶 Walk or cycle instead of using a car.",
-                    "💡 Reduce unnecessary electricity usage.",
-                    "🥗 Eat more plant-based meals.",
-                    "✈️ Avoid non-essential flights."
-                ])
-            elif score_drop >= 10:
-                tips.extend([
-                    "🚌 Use public transport whenever possible.",
-                    "🔌 Switch off appliances when not in use.",
-                    "♻️ Recycle household waste regularly."
-                ])
-            else:
-                tips.append("🌿 Great work! Continue your sustainable habits.")
-
-            for tip in tips:
-                st.write(f"✅ {tip}")
-
-            days = max(3, score_drop // 2)
-
-            st.info(
-                f"📅 Estimated time to recover your sustainability streak: **{days} days**"
-            )
-
-            st.markdown("### 📊 Streak Health Summary")
-
-            status = "Healthy"
-            message = "Keep maintaining your current sustainable habits."
-
-            if score_drop >= 20:
-                status = "Critical"
-                message = "Immediate improvements are recommended to avoid losing your streak."
-            elif score_drop >= 10:
-                status = "Needs Attention"
-                message = "Small lifestyle changes can quickly improve your progress."
-
-            col1, col2 = st.columns(2)
+            col1, col2, col3, col4 = st.columns(4)
 
             with col1:
-                st.metric("Streak Status", status)
+                export_format = st.selectbox(
+                    "Format",
+                    options=["csv", "excel", "json", "html", "markdown", "tsv", "multi"],
+                    index=0,
+                    key="export_format",
+                    help="Select export format"
+                )
 
             with col2:
-                st.metric("Recent Score Drop", f"{score_drop} pts")
-
-            st.caption(message)
-
-                    
-
-        if history:
-            import pandas as pd
-            import plotly.graph_objects as go
-            df = pd.DataFrame(
-                history,
-                columns=[
-                    "id",
-                    "date",
-                    "Created At",
-                    "transport",
-                    "distance",
-                    "electricity",
-                    "diet",
-                    "flights",
-                    "footprint",
-                    "eco_score",
-                ],
-            )
-
-            # -----------------------------
-            # Eco Impact Streak Calendar
-            # -----------------------------
-            st.markdown("---")
-            st.subheader("📅 Eco Impact Streak Calendar")
-
-            calendar_df = df.copy()
-            calendar_df["date"] = pd.to_datetime(calendar_df["date"]).dt.date
-
-            today = pd.Timestamp.today().date()
-            last_30_days = pd.date_range(end=today, periods=30)
-
-            activity = []
-
-            for day in last_30_days:
-                if day.date() in calendar_df["date"].values:
-                    activity.append("🟩")
-                else:
-                    activity.append("⬜")
-
-            calendar_html = ""
-
-            for i, box in enumerate(activity):
-                calendar_html += f"<span style='font-size:20px'>{box}</span>"
-                if (i + 1) % 10 == 0:
-                    calendar_html += "<br>"
-
-            st.markdown(calendar_html, unsafe_allow_html=True)
-
-            active_days = len(calendar_df)
-
-            st.metric(
-                "🌱 Active Eco Days",
-                active_days
-            )
-
-            st.caption("🟩 Assessment completed   ⬜ No assessment")
-
-
-
-            # ---------------------------------------------------------------
-            # Format the automatically generated creation timestamps before
-            # displaying them in the Assessment History table.
-            #
-            # The database stores timestamps in the default SQLite format
-            # (YYYY-MM-DD HH:MM:SS), which is suitable for storage and sorting
-            # but not very user-friendly.
-            #
-            # This formatting step converts the raw timestamp into a more
-            # readable format (e.g., "01 Aug 2026 03:45 PM"), improving the
-            # overall user experience while preserving the original data in
-            # the database.
-            #
-            # If a timestamp is missing or unavailable, a placeholder ("-")
-            # is displayed instead of causing formatting errors.
-            # ---------------------------------------------------------------
-            df["Created At"] = df["Created At"].apply(format_timestamp)
-            latest = history[0]
-            stat1, stat2, stat3, stat4 = st.columns(4)
-
-            with stat1:
-                st.metric("Latest Footprint", f"{latest[7]:.0f} kg CO₂")
-
-            with stat2:
-                st.metric("Latest Score", f"{latest[8]}/100")
-
-            if len(history) >= 2:
-                previous_footprint = history[1][7]
-                change = (
-                    ((previous_footprint - latest[7]) / previous_footprint) * 100
-                    if previous_footprint
-                    else 0
+                date_range = st.selectbox(
+                    "Date Range",
+                    options=["All", "Last 7 Days", "Last 30 Days", "Last 90 Days", "This Year"],
+                    index=0,
+                    key="export_date_range"
                 )
-                with stat3:
-                    st.metric(
-                        "Change",
-                        f"{abs(change):.1f}%",
-                        delta=f"{change:.1f}% reduction",
-                    )
-            else:
-                with stat3:
-                    st.metric("Change", "N/A")
 
-            with stat4:
-                st.metric("Total Records", len(history))
-
-            st.markdown("### 📉 Carbon Footprint Trend")
-            trend_df = df[["date", "footprint"]].iloc[::-1].reset_index(drop=True)
-            trend_df["date"] = pd.to_datetime(trend_df["date"])
-
-            trend_fig = go.Figure()
-            trend_fig.add_trace(
-                go.Scatter(
-                    x=trend_df["date"],
-                    y=trend_df["footprint"],
-                    mode="lines+markers",
-                    name="Carbon Footprint",
-                    line=dict(color="#4ade80", width=3),
-                    marker=dict(size=8, color="#4ade80"),
-                    fill="tozeroy",
-                    fillcolor="rgba(74, 222, 128, 0.2)",
-                    hovertemplate="<b>%{x|%b %d}</b><br>%{y:.0f} kg CO₂<extra></extra>",
+            with col3:
+                include_stats = st.checkbox(
+                    "Include summary stats",
+                    value=True,
+                    key="export_include_stats",
+                    help="Include summary statistics in export"
                 )
-            )
-            trend_fig.update_layout(
-                height=320,
-                margin=dict(l=40, r=20, t=20, b=40),
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(55, 65, 81, 0.2)",
-                showlegend=False,
-                hovermode="x unified",
-            )
-            st.plotly_chart(trend_fig, use_container_width=True)
 
-            st.markdown("### 📋 Assessment History")
-            display_df = df[
-                ["date", "transport", "electricity", "footprint", "eco_score"]
-            ].copy()
-            display_df.columns = [
-                "📅 Date",
-                "🚗 Transport",
-                "⚡ Electricity (kWh)",
-                "🌍 Footprint (kg CO₂)",
-                "⭐ Eco Score",
-            ]
-            display_df = display_df.iloc[::-1].reset_index(drop=True)
-
-            MAX_SEARCH = 100
-
-            search_text = st.text_input(
-                "🔍 Search by Date",
-                placeholder="Enter date...",
-                key="assessment_history_search",
-                max_chars=MAX_SEARCH,
-            )
-
-            st.caption(f"🔎 {len(search_text)}/{MAX_SEARCH} characters")
-            min_score, max_score = st.slider(
-    "🌱 Eco Score Range",
-    0,
-    100,
-    (0, 100),
-    key="assessment_history_score_range",
-    help="Adjust the minimum and maximum Eco Score to filter assessment history and display records within the selected range."
-)
-
-            if search_text:
-                display_df = display_df[
-                    display_df["📅 Date"]
-                    .astype(str)
-                    .str.contains(search_text, case=False, na=False)
-                ]
-
-            display_df = display_df[
-                (display_df["⭐ Eco Score"] >= min_score)
-                & (display_df["⭐ Eco Score"] <= max_score)
-            ]
-
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
-
-            avg_footprint = df["footprint"].mean()
-            avg_score = df["eco_score"].mean()
-            min_footprint = df["footprint"].min()
-            max_footprint = df["footprint"].max()
-
-            stats_col1, stats_col2, stats_col3 = st.columns(3)
-            stats_col1.metric("Average Footprint", f"{avg_footprint:.0f} kg CO₂")
-            stats_col2.metric("Average Score", f"{avg_score:.0f}/100")
-            stats_col3.metric(
-                "Footprint Range",
-                f"{min_footprint:.0f}–{max_footprint:.0f} kg CO₂",
-            )
+            with col4:
+                if st.button("📥 Export Data", type="primary", use_container_width=True):
+                    with st.spinner("Preparing export..."):
+                        from src.lib.export_manager import export_assessments, export_summary
+                        
+                        # Get filtered data
+                        assessments = display_df.to_dict('records') if not display_df.empty else []
+                        
+                        if not assessments:
+                            st.warning("No data to export. Please adjust filters.")
+                        else:
+                            # Show summary first if requested
+                            if include_stats:
+                                summary = export_summary(assessments)
+                                with st.expander("📊 Export Summary"):
+                                    col_a, col_b, col_c = st.columns(3)
+                                    with col_a:
+                                        st.metric("Total Assessments", summary["total_assessments"])
+                                        st.metric("Average Footprint", f"{summary['average_footprint']:.2f} kg CO₂")
+                                        st.metric("Carbon Ranking", summary["carbon_ranking"])
+                                    with col_b:
+                                        st.metric("Average Eco Score", f"{summary['average_eco_score']:.1f}")
+                                        st.metric("Unique Users", summary["unique_users"])
+                                        st.metric("Eco Ranking", summary["eco_ranking"])
+                                    with col_c:
+                                        st.metric("Total Footprint", f"{summary['total_footprint']:.2f} kg CO₂")
+                                        st.metric("Date Range", f"{summary['date_range_days']} days")
+                                        st.metric("Transport Modes", len(summary["transport_modes"]))
+                            
+                            # Export
+                            result = export_assessments(assessments, format=export_format)
+                            
+                            if result.success:
+                                st.success(f"✅ {result.message} ({result.row_count} rows, {result.file_size_kb:.1f} KB)")
+                                
+                                # Download button
+                                mime_types = {
+                                    "csv": "text/csv",
+                                    "excel": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    "json": "application/json",
+                                    "html": "text/html",
+                                    "markdown": "text/markdown",
+                                    "tsv": "text/tab-separated-values",
+                                    "multi": "application/zip"
+                                }
+                                
+                                st.download_button(
+                                    label=f"⬇️ Download {result.filename}",
+                                    data=result.data,
+                                    file_name=result.filename,
+                                    mime=mime_types.get(export_format, "text/plain"),
+                                    use_container_width=True
+                                )
+                            else:
+                                st.error(f"❌ {result.message}")
         else:
-            st.info(
-                "No assessment history yet. Complete an assessment to start tracking your progress."
+            st.info("No assessments match the current filters.")
+
+        # Pagination
+        render_history_pagination(manager)
+
+        # Export button
+        if manager._filtered_assessments:
+            csv_data = manager.export_csv()
+            st.download_button(
+                label="📥 Download CSV",
+                data=csv_data,
+                file_name=f"assessment_history_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                use_container_width=True
             )
 
 with tab2:
@@ -4577,7 +4497,7 @@ with tab2:
     st.markdown("<div class='section-header'>⚡ Home Energy Audit</div>", unsafe_allow_html=True)
 
     # Init energy db
-    db.init_energy_db()
+    src.notifications.db.init_energy_db()
 
     st.markdown("### 🔌 Appliance Registry")
     with st.expander("➕ Add New Appliance", expanded=False):
@@ -4602,11 +4522,11 @@ with tab2:
 
             submit_app = st.form_submit_button("Add Appliance")
             if submit_app and app_name:
-                db.add_appliance(user_id, app_name, app_cat, app_qty, app_power, app_hours, app_standby)
+                src.notifications.db.add_appliance(user_id, app_name, app_cat, app_qty, app_power, app_hours, app_standby)
                 st.success(f"Added {app_name}")
                 st.rerun()
 
-    appliances = db.get_appliances(user_id)
+    appliances = src.notifications.db.get_appliances(user_id)
     if appliances:
         # Build a styled HTML table instead of st.dataframe
         category_icons = {"AC": "❄️", "EV Charger": "🔋", "Heat Pump": "🌡️", "Refrigerator": "🧊", "Lighting": "💡", "Other": "🔌"}
@@ -4657,7 +4577,7 @@ with tab2:
                 key="del_app",
                 help="Remove the selected appliance."
             ):
-                db.delete_appliance(del_id[0])
+                src.notifications.db.delete_appliance(del_id[0])
                 st.rerun()
 
         # Calculate summaries
@@ -4719,6 +4639,10 @@ with tab2:
         <span style='color:#e5e7eb; font-size:15px;'>Over 20 years, you could save <b style="color:#4ade80;">${savings_20y:,.0f}</b> and offset <b style="color:#4ade80;">{carbon_offset:,.0f} kg CO₂</b> annually.</span>
     </div>
     """, unsafe_allow_html=True)
+
+    st.markdown("---")
+    import energy_tracker
+    src.energy.energy_tracker.render_energy_tracker(user_id)
 
 with tab3:
     st.markdown("<div class='section-header'>🎮 Your Eco Journey</div>", unsafe_allow_html=True)
@@ -5009,7 +4933,7 @@ with tab4:
 
         <div class="empty-subtitle">
             Complete your lifestyle profile above and click
-            <b>"Analyze My Impact"</b> to generate your first carbon footprint report.
+            <b>"Analyze My Impact"</b> to generate your first carbon footprint src.reporting.report.
         </div>
 
         <div class="empty-checklist">
@@ -5027,6 +4951,9 @@ with tab4:
 
     </div>
     """, unsafe_allow_html=True)
+    
+    import travel_tracker
+    src.lifestyle.travel_tracker.render_travel_tracker(user_id)
 
 with tab6:
     import plotly.graph_objects as go
@@ -5043,7 +4970,7 @@ with tab6:
             <div style='font-size:22px; font-weight:700; color:#e5e7eb; margin-bottom:12px;'>No Assessment History Yet</div>
             <div style='font-size:15px; color:#94a3b8; max-width:500px; margin:0 auto; line-height:1.8;'>
                 Complete your first carbon footprint assessment in the
-                <b>🌍 Carbon Footprint</b> tab to unlock your Future Self report.
+                <b>🌍 Carbon Footprint</b> tab to unlock your Future Self src.reporting.report.
                 <br><br>
                 Once you have at least one assessment recorded, this dashboard will
                 project your environmental impact 1, 5, and 10 years from now.
@@ -5054,13 +4981,13 @@ with tab6:
         scenario_labels = {1: "1 Year", 5: "5 Years", 10: "10 Years"}
 
         metrics_cols = st.columns(4)
-        metrics_cols[0].metric("Current Footprint", f"{report.current_footprint:.0f} kg")
-        metrics_cols[1].metric("Current Eco Score", f"{report.current_eco_score}/100")
-        metrics_cols[2].metric("Assessments Logged", str(report.num_assessments))
-        trend_str = f"{abs(report.trend_slope):.1f} kg/assessment"
-        if report.trend_slope < 0:
+        metrics_cols[0].metric("Current Footprint", f"{src.reporting.report.current_footprint:.0f} kg")
+        metrics_cols[1].metric("Current Eco Score", f"{src.reporting.report.current_eco_score}/100")
+        metrics_cols[2].metric("Assessments Logged", str(src.reporting.report.num_assessments))
+        trend_str = f"{abs(src.reporting.report.trend_slope):.1f} kg/assessment"
+        if src.reporting.report.trend_slope < 0:
             trend_str = f"↓ {trend_str}"
-        elif report.trend_slope > 0:
+        elif src.reporting.report.trend_slope > 0:
             trend_str = f"↑ {trend_str}"
         else:
             trend_str = "→ Stable"
@@ -5072,7 +4999,7 @@ with tab6:
 
         scenario_rows = []
         for year in (1, 5, 10):
-            s = report.scenarios[year]
+            s = src.reporting.report.scenarios[year]
             scenario_rows.append({
                 "Horizon": scenario_labels[year],
                 "Annual Footprint (kg)": f"{s.annual_footprint:.0f}",
@@ -5151,15 +5078,15 @@ with tab6:
         st.markdown("<div class='section-header'>📊 Contributors Over Time</div>", unsafe_allow_html=True)
 
         cat_fig = go.Figure()
-        categories = list(report.current_contributors.keys())
+        categories = list(src.reporting.report.current_contributors.keys())
         colors = {"Transport": "#4ade80", "Electricity": "#60a5fa", "Diet": "#fbbf24", "Flights": "#f87171"}
 
         x_labels = ["Current"] + [scenario_labels[y] for y in (1, 5, 10)]
 
         for cat in categories:
-            values = [report.current_contributors.get(cat, 0)]
+            values = [src.reporting.report.current_contributors.get(cat, 0)]
             for year in (1, 5, 10):
-                values.append(report.scenarios[year].contributors.get(cat, 0))
+                values.append(src.reporting.report.scenarios[year].contributors.get(cat, 0))
             cat_fig.add_trace(go.Bar(
                 name=cat,
                 x=x_labels,
@@ -5311,7 +5238,7 @@ function scrollToTop() {
 
         st.markdown("<div class='section-header'>🌍 What This Means</div>", unsafe_allow_html=True)
 
-        ten_yr = report.scenarios[10]
+        ten_yr = src.reporting.report.scenarios[10]
         avg_person_annual = 4700
         trees_per_kg = 0.0005
         offset_trees_10yr = int(ten_yr.cumulative_emissions * trees_per_kg)
@@ -5342,7 +5269,7 @@ function scrollToTop() {
                     that each absorb ~48 lbs of CO₂ per year.
                     <br><br>
                     Your current footprint is
-                    <b>{'above' if report.current_footprint > avg_person_annual else 'below'}</b>
+                    <b>{'above' if src.reporting.report.current_footprint > avg_person_annual else 'below'}</b>
                     the global average of {avg_person_annual:,} kg CO₂/year.
                 </div>
             </div>
@@ -5353,10 +5280,10 @@ function scrollToTop() {
         st.markdown("<div class='section-header'>📋 Scenario Details</div>", unsafe_allow_html=True)
 
         for year in (1, 5, 10):
-            s = report.scenarios[year]
-            direction = "increasing" if s.annual_footprint > report.current_footprint else "decreasing" if s.annual_footprint < report.current_footprint else "stable"
+            s = src.reporting.report.scenarios[year]
+            direction = "increasing" if s.annual_footprint > src.reporting.report.current_footprint else "decreasing" if s.annual_footprint < src.reporting.report.current_footprint else "stable"
             emoji = "📈" if direction == "increasing" else "📉" if direction == "decreasing" else "➡️"
-            score_change = s.eco_score - report.current_eco_score
+            score_change = s.eco_score - src.reporting.report.current_eco_score
             score_dir = "improving" if score_change > 0 else "declining" if score_change < 0 else "stable"
             score_emoji = "✅" if score_change > 0 else "⚠️" if score_change < 0 else "➡️"
 
@@ -5405,7 +5332,7 @@ col1, col2, col3 = st.columns(3)
 
 with col1:
     st.success("📊 Carbon Footprint Dashboard")
-    st.caption("Track your yearly emissions.")
+    st.caption("Track your yearly src.carbon.emissions.")
 
 with col2:
     st.success("🤖 AI Insights")
@@ -5555,3 +5482,27 @@ and <b>Pandas</b>.
 
 </div>
 """, unsafe_allow_html=True)
+
+# ============================================================
+# AUTO-UPDATE CARBON TRACKER
+# ============================================================
+
+def auto_update_carbon_tracker():
+    """Auto-update carbon tracker when inputs change."""
+    from src.lib.carbon_tracker import update_carbon_tracker
+    
+    if all(key in st.session_state for key in ['transport', 'distance', 'electricity', 'diet', 'flights']):
+        tracker_data = {
+            "transport": st.session_state.get("transport", "Car"),
+            "distance": float(st.session_state.get("distance", 10.0)),
+            "electricity": float(st.session_state.get("electricity", 200.0)),
+            "diet": st.session_state.get("diet", "Vegetarian"),
+            "flights": int(st.session_state.get("flights", 0)),
+            "region": st.session_state.get("region", "Global")
+        }
+        try:
+            update_carbon_tracker(tracker_data)
+        except Exception:
+            pass
+
+auto_update_carbon_tracker()
