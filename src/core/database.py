@@ -216,6 +216,16 @@ def init_db() -> bool:
                 """)
 
                 cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS food_rescue_logs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        recipient_name TEXT,
+                        weight_kg REAL,
+                        net_carbon_benefit_kg REAL,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+
+                cursor.execute("""
                     CREATE TABLE IF NOT EXISTS policy_simulations (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         footprint_tonnes REAL,
@@ -6065,6 +6075,7 @@ def save_solar_config(user_id: int, roof_space: float, peak_sun_hours: float, ut
 
 
 @cached(category=CACHE_CATEGORY_DB_READS, ttl=TTL_DB_READ)
+def 
 def get_solar_config(user_id: int = 1) -> dict[str, Any] | None:
     try:
         conn = sqlite3.connect(DB_NAME)
