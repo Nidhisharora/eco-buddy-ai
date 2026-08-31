@@ -114,6 +114,16 @@ def init_db() -> bool:
                 """)
 
                 cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS resilience_plans (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        region TEXT,
+                        housing_type TEXT,
+                        base_resilience_score REAL,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+
+                cursor.execute("""
                     CREATE TABLE IF NOT EXISTS event_plans (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         guest_count INTEGER,
@@ -135,6 +145,17 @@ def init_db() -> bool:
                 """)
 
                 cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS repair_logs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        product_key TEXT,
+                        replaced_part TEXT,
+                        status TEXT,
+                        carbon_saved_kg REAL,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+
+                cursor.execute("""
                     CREATE TABLE IF NOT EXISTS anomaly_alerts (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         user_id TEXT,
@@ -142,6 +163,16 @@ def init_db() -> bool:
                         carbon_kg REAL,
                         severity TEXT,
                         resolved BOOLEAN DEFAULT 0,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS portfolio_analyses (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        total_invested REAL,
+                        total_emissions REAL,
+                        alignment_score REAL,
                         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
@@ -181,6 +212,16 @@ def init_db() -> bool:
                         user_id TEXT PRIMARY KEY,
                         balance REAL DEFAULT 0.0,
                         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS food_rescue_logs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        recipient_name TEXT,
+                        weight_kg REAL,
+                        net_carbon_benefit_kg REAL,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
 
@@ -239,6 +280,16 @@ def init_db() -> bool:
                         category TEXT,
                         difficulty TEXT,
                         karma_cost INTEGER,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS civic_actions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        campaign_name TEXT,
+                        action_type TEXT,
+                        points_awarded REAL,
                         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
@@ -5200,8 +5251,200 @@ def save_assessment(
         return False
 
 
-def get_assessment_snapshot(assessment_id: int) -> dict[str, Any] | None:
+def get_assessment_by_id(assessment_id: int, user_id: int = 1) -> dict[str, Any] | None:
     """
+    Fetch a single assessment together with its concurrency metadata (#1467).
+
+    Used by update_assessment()/finalize_assessment() to build the
+    "current" payload returned on a conflict, and by the frontend to
+    reload the latest row after a stale-edit conflict.
+    """
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, user_id, transport, distance, electricity, diet,
+                   flights, footprint, eco_score, revision, is_finalized,
+                   updated_at
+            FROM assessments
+            WHERE id = ? AND user_id = ?
+            """,
+            (assessment_id, user_id),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if row is None:
+            return None
+        keys = [
+            "id", "user_id", "transport", "distance", "electricity", "diet",
+            "flights", "footprint", "eco_score", "revision", "is_finalized",
+            "updated_at",
+        ]
+        return dict(zip(keys, row))
+    except sqlite3.Error as e:
+        print(f"Database get_assessment_by_id error: {e}")
+        return None
+
+
+_ASSESSMENT_EDITABLE_COLUMNS = {
+    "transport", "distance", "electricity", "diet", "flights",
+    "footprint", "eco_score",
+}
+
+
+def update_assessment(
+    assessment_id: int,
+    user_id: int,
+    expected_revision: int,
+    updates: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Apply a partial update to an assessment using optimistic concurrency
+    control (#1467).
+
+    The caller passes `expected_revision`, the revision it last read. The
+    UPDATE's WHERE clause checks and applies the change in a single atomic
+    statement (`revision = expected_revision`), so two requests racing on
+    stale data can never both succeed - the second one simply matches zero
+    rows. A finalized assessment (`is_finalized = 1`) is likewise excluded,
+    so it can't be edited by accident.
+
+    `updates` may contain any of: transport, distance, electricity, diet,
+    flights, footprint, eco_score. Unknown keys are ignored.
+
+    Returns one of:
+        {"status": "ok", "revision": <new revision>}
+        {"status": "conflict", "current": {...latest row...}}
+        {"status": "finalized", "current": {...latest row...}}
+        {"status": "not_found"}
+        {"status": "error", "error": "..."}
+    """
+    set_columns = [c for c in updates if c in _ASSESSMENT_EDITABLE_COLUMNS]
+    if not set_columns:
+        return {"status": "error", "error": "No valid columns supplied"}
+
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+
+        assignments = ", ".join(f"{c} = ?" for c in set_columns)
+        values = [updates[c] for c in set_columns]
+
+        cursor.execute(
+            f"""
+            UPDATE assessments
+            SET {assignments}, revision = revision + 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND user_id = ? AND revision = ? AND is_finalized = 0
+            """,
+            (*values, assessment_id, user_id, expected_revision),
+        )
+
+        if cursor.rowcount == 1:
+            conn.commit()
+            conn.close()
+            invalidate_on_assessment_save()
+            return {"status": "ok", "revision": expected_revision + 1}
+
+        # Nothing matched: work out why, so the caller/UI gets a precise
+        # reason instead of a generic failure.
+        conn.close()
+        current = get_assessment_by_id(assessment_id, user_id)
+        if current is None:
+            return {"status": "not_found"}
+        if current["is_finalized"]:
+            return {"status": "finalized", "current": current}
+        return {"status": "conflict", "current": current}
+    except sqlite3.Error as e:
+        print(f"Database update_assessment error: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+def finalize_assessment(
+    assessment_id: int, user_id: int, expected_revision: int
+) -> dict[str, Any]:
+    """
+    Mark an assessment finalized (#1467). Uses the same revision check as
+    update_assessment(), so finalizing stale data is rejected the same way
+    an edit would be. Once finalized, update_assessment() refuses further
+    changes until reopen_finalized_assessment() is called explicitly.
+    """
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE assessments
+            SET is_finalized = 1, revision = revision + 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND user_id = ? AND revision = ? AND is_finalized = 0
+            """,
+            (assessment_id, user_id, expected_revision),
+        )
+
+        if cursor.rowcount == 1:
+            conn.commit()
+            conn.close()
+            invalidate_on_assessment_save()
+            return {"status": "ok", "revision": expected_revision + 1}
+
+        conn.close()
+        current = get_assessment_by_id(assessment_id, user_id)
+        if current is None:
+            return {"status": "not_found"}
+        if current["is_finalized"]:
+            return {"status": "finalized", "current": current}
+        return {"status": "conflict", "current": current}
+    except sqlite3.Error as e:
+        print(f"Database finalize_assessment error: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+def reopen_finalized_assessment(
+    assessment_id: int, user_id: int, expected_revision: int
+) -> dict[str, Any]:
+    """
+    Explicit revision workflow (#1467) for editing a finalized assessment.
+
+    This is the only way to make a finalized row editable again - it is a
+    separate, deliberate call rather than something update_assessment()
+    does implicitly, so a finalized assessment can never be modified by
+    accident. Still revision-checked, so reopening itself can't silently
+    clobber a finalize that happened after the caller last read the row.
+    """
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE assessments
+            SET is_finalized = 0, revision = revision + 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND user_id = ? AND revision = ? AND is_finalized = 1
+            """,
+            (assessment_id, user_id, expected_revision),
+        )
+
+        if cursor.rowcount == 1:
+            conn.commit()
+            conn.close()
+            invalidate_on_assessment_save()
+            return {"status": "ok", "revision": expected_revision + 1}
+
+        conn.close()
+        current = get_assessment_by_id(assessment_id, user_id)
+        if current is None:
+            return {"status": "not_found"}
+        if not current["is_finalized"]:
+            return {"status": "not_finalized", "current": current}
+        return {"status": "conflict", "current": current}
+    except sqlite3.Error as e:
+        print(f"Database reopen_finalized_assessment error: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+def get_assessment_snapshot(assessment_id: int) -> dict[str, Any] | None:    """
     Read back the immutable calculation snapshot for one assessment.
 
     Returns None when no snapshot was stored for this assessment (e.g. rows
@@ -5792,6 +6035,25 @@ def add_appliance(user_id: int, name: str, category: str, quantity: int, power_r
         print(f"Appliance save error: {e}")
         return False
 
+def save_civic_action(campaign_name: str, action_type: str, points_awarded: float) -> None:
+    """Saves a completed civic action to the database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO civic_actions (campaign_name, action_type, points_awarded)
+        VALUES (?, ?, ?)
+    """, (campaign_name, action_type, points_awarded))
+    conn.commit()
+    conn.close()
+
+def get_civic_history() -> list:
+    """Retrieves historical civic action logs."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT campaign_name, action_type, points_awarded, timestamp FROM civic_actions ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
 
 def delete_appliance(app_id: int) -> bool:
     try:
@@ -5842,6 +6104,7 @@ def save_solar_config(user_id: int, roof_space: float, peak_sun_hours: float, ut
 
 
 @cached(category=CACHE_CATEGORY_DB_READS, ttl=TTL_DB_READ)
+def 
 def get_solar_config(user_id: int = 1) -> dict[str, Any] | None:
     try:
         conn = sqlite3.connect(DB_NAME)
@@ -8847,6 +9110,26 @@ def save_p2p_simulation(grid_price: float, p2p_price: float, total_volume_kwh: f
     conn.commit()
     conn.close()
 
+def save_portfolio_analysis(total_invested: float, total_emissions: float, alignment_score: float) -> None:
+    """Saves a sustainable portfolio analysis to the database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO portfolio_analyses (total_invested, total_emissions, alignment_score)
+        VALUES (?, ?, ?)
+    """, (total_invested, total_emissions, alignment_score))
+    conn.commit()
+    conn.close()
+
+def get_portfolio_history() -> list:
+    """Retrieves historical portfolio analyses."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT total_invested, total_emissions, alignment_score, timestamp FROM portfolio_analyses ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
 def get_p2p_history() -> list:
     """Retrieves historical P2P energy simulations."""
     conn = get_connection()
@@ -8865,6 +9148,26 @@ def get_event_history() -> list:
     conn.close()
     return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
 
+def save_repair_log(product_key: str, replaced_part: str, status: str, carbon_saved_kg: float) -> None:
+    """Saves a product repair log to the database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO repair_logs (product_key, replaced_part, status, carbon_saved_kg)
+        VALUES (?, ?, ?, ?)
+    """, (product_key, replaced_part, status, carbon_saved_kg))
+    conn.commit()
+    conn.close()
+
+def get_repair_history() -> list:
+    """Retrieves historical product repair logs."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT product_key, replaced_part, status, carbon_saved_kg, timestamp FROM repair_logs ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
+
 def save_virtual_water_log(product: str, quantity: float, region: str, scarcity_weighted_l: float) -> None:
     """Saves a virtual water footprint log to the database."""
     conn = get_connection()
@@ -8875,6 +9178,26 @@ def save_virtual_water_log(product: str, quantity: float, region: str, scarcity_
     """, (product, quantity, region, scarcity_weighted_l))
     conn.commit()
     conn.close()
+
+def save_resilience_plan(region: str, housing_type: str, base_resilience_score: float) -> None:
+    """Saves a climate resilience assessment to the database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO resilience_plans (region, housing_type, base_resilience_score)
+        VALUES (?, ?, ?)
+    """, (region, housing_type, base_resilience_score))
+    conn.commit()
+    conn.close()
+
+def get_resilience_history() -> list:
+    """Retrieves historical climate resilience assessments."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT region, housing_type, base_resilience_score, timestamp FROM resilience_plans ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(zip([column[0] for column in cursor.description], row)) for row in rows]
 
 def get_virtual_water_history() -> list:
     """Retrieves historical virtual water logs."""

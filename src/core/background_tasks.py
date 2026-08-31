@@ -30,7 +30,39 @@ _THREAD_POOL = ThreadPoolExecutor(
     thread_name_prefix="ecobuddy_bg_worker",
 )
 
+# Add this new task class definition in the background_tasks.py module
 
+class ReportGenerationTask:
+    """Background task for asynchronous report generation."""
+    
+    @staticmethod
+    def generate_report(job_id: str, report_input_dict: dict) -> None:
+        """
+        Execute report generation as a background task.
+        Called by the background task scheduler.
+        """
+        from src.reporting.report_generator import ReportGenerator
+        from src.reporting.report_job_models import ReportInput, ReportType
+        from src.reporting.report_job_service import ReportJobService
+        from src.database import SessionLocal
+        
+        db = SessionLocal()
+        try:
+            # Reconstruct input from dict
+            report_input = ReportInput(
+                user_id=report_input_dict['user_id'],
+                report_type=ReportType(report_input_dict['report_type']),
+                assessment_data=report_input_dict.get('assessment_data', {}),
+                metrics_data=report_input_dict.get('metrics_data', {}),
+                goals_data=report_input_dict.get('goals_data', {}),
+                recommendations_data=report_input_dict.get('recommendations_data', {}),
+            )
+            
+            job_service = ReportJobService(db)
+            generator = ReportGenerator(job_service)
+            generator.generate_async(job_id, report_input)
+        finally:
+            db.close()
 class TaskStatus:
     """Supported task lifecycle states."""
 

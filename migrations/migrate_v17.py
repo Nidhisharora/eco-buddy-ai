@@ -1,9 +1,96 @@
 import sqlite3
 
+
 def migrate(conn: sqlite3.Connection) -> None:
-    """Apply migration version 17: Add api_rate_limits, data retention, event tables, and API usage metering tables."""
+    """Apply migration version 17: Assessment Locking & Concurrent Edit
+    Protection (#1467).
+
+    Adds optimistic-concurrency support to the `assessments` table:
+
+    - `revision`: starts at 1 for every row, incremented by exactly 1 on
+      every successful update/finalize/reopen. Callers must pass back the
+      revision they last read; if it no longer matches, the write is
+      rejected as a conflict instead of silently overwriting newer data.
+    - `is_finalized`: 0/1 flag. Once set, `update_assessment()` refuses
+      ordinary edits - the row can only be changed again through the
+      explicit `reopen_finalized_assessment()` workflow.
+    """
+    for column_sql in (
+        "ADD COLUMN revision INTEGER NOT NULL DEFAULT 1",
+        "ADD COLUMN is_finalized INTEGER NOT NULL DEFAULT 0",
+    ):
+        try:
+            conn.execute(f"ALTER TABLE assessments {column_sql}")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
+
+    conn.commit()
+"""
+Migration to add feature flags and experiment tracking tables.
+"""
+import sqlite3
+
+def migrate(conn: sqlite3.Connection) -> None:
+    """Apply migration version 17: Add feature flags, api usage, rate limits, and data retention."""
     cursor = conn.cursor()
 
+    # Create feature flags table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS feature_flags (
+            name TEXT PRIMARY KEY,
+            enabled BOOLEAN NOT NULL DEFAULT 0,
+            rollout_percentage REAL NOT NULL DEFAULT 100.0,
+            target_rules TEXT NOT NULL DEFAULT '{}',
+            variants TEXT NOT NULL DEFAULT '[]',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # Create flag overrides table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS flag_overrides (
+            flag_name TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            enabled BOOLEAN NOT NULL,
+            variant TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (flag_name, user_id)
+        )
+    ''')
+
+    # Create experiment assignments table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS experiment_assignments (
+            flag_name TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            variant TEXT NOT NULL,
+            assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (flag_name, user_id)
+        )
+    ''')
+
+    # Create experiment metrics table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS experiment_metrics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            flag_name TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            variant TEXT NOT NULL,
+            metric_name TEXT NOT NULL,
+            metric_value REAL NOT NULL DEFAULT 1.0,
+            recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # Create indexes for fast querying
+    cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_experiment_metrics_flag 
+        ON experiment_metrics (flag_name, variant)
+    ''')
+
+    # Create API usage metering tables
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS api_usage_records (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

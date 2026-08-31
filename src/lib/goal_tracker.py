@@ -12,8 +12,14 @@ from enum import Enum
 import threading
 import json
 
-logger = logging.getLogger(__name__)
+from src.utils.goal_progress_reconciliation import (
+    get_goal_progress_reconciler,
+    SourceType,
+    ChangeType,
+    SourceChange,
+)
 
+logger = logging.getLogger(__name__)
 
 class GoalType(Enum):
     """Types of goals."""
@@ -141,9 +147,11 @@ class GoalTracker:
         self._lock = threading.Lock()
         self._goal_counter = 0
         
-        # Load default goals
-        self._load_default_goals()
+        # Reconciliation support
+        self._reconciler = get_goal_progress_reconciler()
         
+        # Load default goals
+        self._load_default_goals()        
         # Start monitoring thread
         self._stop_monitor = False
         self._monitor_thread = threading.Thread(target=self._monitor_worker, daemon=True)
@@ -297,8 +305,105 @@ class GoalTracker:
             logger.info(f"Updated goal {goal_id}: {goal.progress:.1f}%")
             return True
     
-    def _complete_goal(self, goal_id: str) -> None:
-        """Complete a goal and award rewards."""
+    def register_goal_source_dependency(
+        self,
+        goal_id: str,
+        source_type: SourceType,
+        source_id: str,
+    ) -> None:
+        """Register that a goal depends on a source (assessment, activity, etc).
+        
+        Args:
+            goal_id: Goal ID
+            source_type: Type of source (ASSESSMENT, ACTIVITY_RECORD, etc)
+            source_id: Unique ID of the source
+        """
+        self._reconciler.register_goal_dependency(goal_id, source_type, source_id)
+        logger.debug(f"Registered goal {goal_id} source dependency: {source_type} {source_id}")
+    
+    def notify_source_change(
+        self,
+        source_type: SourceType,
+        change_type: ChangeType,
+        source_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Tuple[float, bool]]:
+        """Notify about a source data change and reconcile affected goals.
+        
+        Args:
+            source_type: Type of source that changed
+            change_type: Type of change (CREATED, UPDATED, DELETED, etc)
+            source_id: Unique ID of the source
+            metadata: Optional metadata about the change
+        
+        Returns:
+            Dict mapping goal_id to (calculated_progress, is_consistent)
+        """
+        change = SourceChange(
+            source_type=source_type,
+            change_type=change_type,
+            source_id=source_id,
+            metadata=metadata or {},
+        )
+        
+        def goal_fetcher(goal_id: str) -> Optional[Goal]:
+            with self._lock:
+                return self._goals.get(goal_id)
+        
+        return self._reconciler.reconcile_goals_affected_by_source(change, goal_fetcher)
+    
+    def reconcile_goal(self, goal_id: str) -> Tuple[float, bool]:
+        """Manually reconcile a single goal.
+        
+        Args:
+            goal_id: Goal ID to reconcile
+        
+        Returns:
+            (calculated_progress, is_consistent)
+        """
+        with self._lock:
+            goal = self._goals.get(goal_id)
+            if not goal:
+                return 0.0, True
+            
+            return self._reconciler.reconcile_goal(
+                goal_id, goal.user_id, goal.progress
+            )
+    
+    def repair_goal_progress(self, goal_id: str, correct_progress: float) -> bool:
+        """Repair a goal's progress to a correct value.
+        
+        Args:
+            goal_id: Goal ID to repair
+            correct_progress: The correct progress value
+        
+        Returns:
+            True if repair was successful
+        """
+        with self._lock:
+            goal = self._goals.get(goal_id)
+            if not goal:
+                return False
+            
+            self._reconciler.repair_goal(goal_id, goal.user_id, correct_progress)
+            goal.progress = correct_progress
+            goal.updated_at = datetime.now()
+            logger.info(f"Repaired goal {goal_id} to {correct_progress:.2f}%")
+            return True
+    
+    def get_goal_discrepancies(self, goal_id: str) -> List[Dict[str, Any]]:
+        """Get all detected discrepancies for a goal.
+        
+        Args:
+            goal_id: Goal ID
+        
+        Returns:
+            List of discrepancies
+        """
+        discrepancies = self._reconciler.get_discrepancies_for_goal(goal_id)
+        return [d.to_dict() for d in discrepancies]
+    
+    def _complete_goal(self, goal_id: str) -> None:        """Complete a goal and award rewards."""
         goal = self._goals.get(goal_id)
         if not goal:
             return

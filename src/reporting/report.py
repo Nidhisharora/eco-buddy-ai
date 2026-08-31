@@ -14,9 +14,23 @@ from src.reporting.report_validation import validate_report_data
 logger = logging.getLogger(__name__)
 
 
-def generate_pdf(total: float, eco_score: int | float, insight: str) -> str | None:
-    """Generate a PDF only when assessment data passes validation."""
-    validation = validate_report_data(total, eco_score, insight)
+def generate_pdf(
+    total: float, 
+    eco_score: int | float, 
+    insight: str,
+    job_id: Optional[str] = None,
+    report_title: str = "Sustainability Report"
+) -> str | None:
+    """
+    Generate a PDF only when assessment data passes validation.
+    
+    Args:
+        total: Carbon footprint total
+        eco_score: Eco score (0-100)
+        insight: Key insight text
+        job_id: Optional job ID for tracking
+        report_title: Custom report title
+    """    validation = validate_report_data(total, eco_score, insight)
     if not validation.is_valid:
         logger.warning(
             "PDF generation blocked by invalid assessment data: %s",
@@ -90,8 +104,7 @@ def generate_pdf(total: float, eco_score: int | float, insight: str) -> str | No
         content = []
 
         content.append(Paragraph("<b>EcoBuddy AI</b>", title_style))
-        content.append(Paragraph("Sustainability Report", subtitle_style))
-        content.append(Spacer(1, 0.2 * inch))
+        content.append(Paragraph(report_title, subtitle_style))        content.append(Spacer(1, 0.2 * inch))
 
         content.append(Paragraph("Sustainability Metrics", section_heading))
 
