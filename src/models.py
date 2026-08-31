@@ -22,7 +22,40 @@ class User(Base):
     offset_transactions = relationship('OffsetTransaction', back_populates='user', cascade='all, delete-orphan')
     water_consumptions = relationship('WaterConsumption', back_populates='user', cascade='all, delete-orphan')
 
+class ReportJob(Base):
+    __tablename__ = 'report_job'
 
+    id = Column(String, primary_key=True)  # Report ID (UUID)
+    user_id = Column(Integer, ForeignKey('user.id'), nullable=False)
+    report_type = Column(String, nullable=False)  # 'monthly', 'annual', 'custom'
+    status = Column(String, nullable=False, default='pending')  # pending, running, completed, failed
+    
+    # Data snapshot references (versions)
+    assessment_snapshot_id = Column(String, nullable=True)
+    metrics_version = Column(String, nullable=True)
+    goals_version = Column(String, nullable=True)
+    
+    # Report generation metadata
+    generation_version = Column(String, nullable=False)  # Version of generation logic
+    
+    # Error handling
+    error_message = Column(String, nullable=True)
+    error_details = Column(String, nullable=True)  # JSON formatted error info
+    
+    # Generated artifact metadata
+    artifact_path = Column(String, nullable=True)  # Path to generated PDF/file
+    artifact_size = Column(Integer, nullable=True)  # Size in bytes
+    artifact_created_at = Column(DateTime, nullable=True)
+    
+    # Lifecycle tracking
+    created_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    retry_count = Column(Integer, default=0)
+    max_retries = Column(Integer, default=3)
+    next_retry_at = Column(DateTime, nullable=True)
+    
+    user = relationship('User', backref='report_jobs')
 class Assessment(Base):
     __tablename__ = 'assessment'
 
