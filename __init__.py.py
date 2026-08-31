@@ -1,55 +1,38 @@
 """
-Sustainability Lifecycle & Long-Term Progress Management Platform
-A comprehensive system for tracking sustainability journeys over time.
+Personal Sustainability Intelligence & Recommendation Platform
+A comprehensive system for generating personalized sustainability recommendations.
 """
 
-from lifecycle.models import (
-    SustainabilityEvent, EventType, GoalLifecycle, HabitLifecycle,
-    ProgressSnapshot, LongTermAnalytics, FutureProjection,
-    AchievementHistory, DecisionHistory, RecommendationHistory,
-    RoadmapHistory, SustainabilityReport, JourneyVisualization,
-    TimelinePeriod, LifecycleStatus, MilestoneEvent
+from intelligence.models import (
+    SustainabilityProfile, Recommendation, RecommendationStatus,
+    RecommendationCategory, RecommendationPriority,
+    RecommendationFeedback, RecommendationAnalytics,
+    ProfileStrength, ProfileWeakness, UserPreference
 )
-from lifecycle.timeline import TimelineGenerator
-from lifecycle.goal_lifecycle import GoalLifecycleTracker
-from lifecycle.habit_lifecycle import HabitLifecycleTracker
-from lifecycle.snapshots import SnapshotManager
-from lifecycle.analytics import LongTermAnalyticsEngine
-from lifecycle.projections import ProjectionEngine
-from lifecycle.achievements import AchievementTracker
-from lifecycle.decision_history import DecisionHistoryManager
-from lifecycle.roadmap_history import RoadmapHistoryManager
-from lifecycle.reports import ReportGenerator
-from lifecycle.database import LifecycleDatabase
-from lifecycle.visualizations import JourneyVisualizer
+from intelligence.profile import ProfileBuilder
+from intelligence.recommendation_engine import RecommendationEngine
+from intelligence.scoring import RecommendationScorer
+from intelligence.context import ContextAnalyzer
+from intelligence.feedback import FeedbackManager
+from intelligence.analytics import RecommendationAnalyticsEngine
+from intelligence.database import IntelligenceDatabase
 
 __all__ = [
-    'SustainabilityEvent',
-    'EventType',
-    'GoalLifecycle',
-    'HabitLifecycle',
-    'ProgressSnapshot',
-    'LongTermAnalytics',
-    'FutureProjection',
-    'AchievementHistory',
-    'DecisionHistory',
-    'RecommendationHistory',
-    'RoadmapHistory',
-    'SustainabilityReport',
-    'JourneyVisualization',
-    'TimelinePeriod',
-    'LifecycleStatus',
-    'MilestoneEvent',
-    'TimelineGenerator',
-    'GoalLifecycleTracker',
-    'HabitLifecycleTracker',
-    'SnapshotManager',
-    'LongTermAnalyticsEngine',
-    'ProjectionEngine',
-    'AchievementTracker',
-    'DecisionHistoryManager',
-    'RoadmapHistoryManager',
-    'ReportGenerator',
-    'LifecycleDatabase',
-    'JourneyVisualizer'
+    'SustainabilityProfile',
+    'Recommendation',
+    'RecommendationStatus',
+    'RecommendationCategory',
+    'RecommendationPriority',
+    'RecommendationFeedback',
+    'RecommendationAnalytics',
+    'ProfileStrength',
+    'ProfileWeakness',
+    'UserPreference',
+    'ProfileBuilder',
+    'RecommendationEngine',
+    'RecommendationScorer',
+    'ContextAnalyzer',
+    'FeedbackManager',
+    'RecommendationAnalyticsEngine',
+    'IntelligenceDatabase'
 ]
